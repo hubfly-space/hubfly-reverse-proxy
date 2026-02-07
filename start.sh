@@ -41,8 +41,50 @@ rewrite_missing_ssl_paths() {
   done
 }
 
+rewrite_legacy_stream_proxy_pass() {
+  shopt -s nullglob
+  for conf in /etc/hubfly/streams/port_*.conf; do
+    if grep -Eq '^[[:space:]]*proxy_pass[[:space:]]+\$' "${conf}"; then
+      continue
+    fi
+
+    upstream=$(sed -n 's|^[[:space:]]*proxy_pass[[:space:]]\+\([^;[:space:]]\+\);$|\1|p' "${conf}" | head -n 1)
+    if [[ -z "${upstream}" ]]; then
+      continue
+    fi
+
+    port=$(basename "${conf}" | sed -n 's/^port_\([0-9]\+\)\.conf$/\1/p')
+    if [[ -z "${port}" ]]; then
+      continue
+    fi
+
+    map_var="stream_simple_map_${port}"
+    tmp_file=$(mktemp)
+
+    awk -v map_var="${map_var}" -v upstream="${upstream}" '
+      BEGIN {
+        print "map $remote_addr $" map_var " {"
+        print "    default " upstream ";"
+        print "}"
+        print ""
+      }
+      {
+        if ($1 == "proxy_pass" && substr($2, 1, 1) != "$") {
+          print "    proxy_pass $" map_var ";"
+          next
+        }
+        print $0
+      }
+    ' "${conf}" > "${tmp_file}"
+
+    mv "${tmp_file}" "${conf}"
+    echo "Migrated legacy stream upstream to runtime variable in ${conf}"
+  done
+}
+
 ensure_fallback_cert
 rewrite_missing_ssl_paths
+rewrite_legacy_stream_proxy_pass
 
 # Start NGINX
 # We rely on standard /etc/nginx/nginx.conf. 

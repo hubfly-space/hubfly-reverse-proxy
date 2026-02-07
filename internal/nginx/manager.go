@@ -414,25 +414,31 @@ func (m *Manager) RebuildStreamConfig(port int, streams []models.Stream) error {
 		if s.Protocol == "udp" {
 			proto = " udp"
 		}
+		mapName := fmt.Sprintf("stream_simple_map_%d", s.ListenPort)
 
-		// Plain server block
-		// We use a variable for upstream to prevent boot errors if container is down (requires resolver)
-		// But variables aren't allowed in 'upstream' directive, but can be used in proxy_pass
+		// Plain server block with runtime-resolved upstream to avoid startup failures
+		// when Docker DNS name is temporarily unavailable.
 		tmpl := `
+map $remote_addr ${{ .MapName }} {
+    default {{ .Upstream }};
+}
+
 server {
     listen {{ .ListenPort }}{{ .Proto }};
     listen [::]:{{ .ListenPort }}{{ .Proto }};
-    proxy_pass {{ .Upstream }};
+    proxy_pass ${{ .MapName }};
 }
 `
 		data := struct {
 			ListenPort int
 			Proto      string
 			Upstream   string
+			MapName    string
 		}{
 			ListenPort: s.ListenPort,
 			Proto:      proto,
 			Upstream:   s.Upstream,
+			MapName:    mapName,
 		}
 
 		t, _ := template.New("simple_stream").Parse(tmpl)

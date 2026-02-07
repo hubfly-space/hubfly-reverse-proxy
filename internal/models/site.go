@@ -23,7 +23,10 @@ type Site struct {
 	ErrorMessage    string    `json:"error_message,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
-	CertIssueStatus string    `json:"cert_issue_status,omitempty"` // "pending", "valid", "failed"
+	CertIssueStatus string    `json:"cert_issue_status,omitempty"` // "pending", "retrying", "valid", "failed"
+	CertRetryCount  int       `json:"cert_retry_count,omitempty"`
+	NextCertRetryAt *time.Time `json:"next_cert_retry_at,omitempty"`
+	LastCertError   string    `json:"last_cert_error,omitempty"`
 }
 
 // APIResponse Standard API response wrapper (optional, but good for consistency)

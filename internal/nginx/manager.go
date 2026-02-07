@@ -19,6 +19,8 @@ type Manager struct {
 	StagingDir   string
 	TemplatesDir string
 	NginxConf    string // Path to main nginx.conf
+	FallbackCert string
+	FallbackKey  string
 }
 
 func NewManager(baseDir string) *Manager {
@@ -28,18 +30,49 @@ func NewManager(baseDir string) *Manager {
 		StagingDir:   filepath.Join(baseDir, "staging"),
 		TemplatesDir: filepath.Join(baseDir, "templates"),
 		NginxConf:    "/etc/nginx/nginx.conf",
+		FallbackCert: filepath.Join(baseDir, "default-certs", "fallback.crt"),
+		FallbackKey:  filepath.Join(baseDir, "default-certs", "fallback.key"),
 	}
 }
 
 // EnsureDirs creates necessary directories
 func (m *Manager) EnsureDirs() error {
-	dirs := []string{m.SitesDir, m.StreamsDir, m.StagingDir, m.TemplatesDir}
+	dirs := []string{
+		m.SitesDir,
+		m.StreamsDir,
+		m.StagingDir,
+		m.TemplatesDir,
+		filepath.Dir(m.FallbackCert),
+	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func (m *Manager) realCertPaths(domain string) (string, string) {
+	base := filepath.Join("/etc/letsencrypt/live", domain)
+	return filepath.Join(base, "fullchain.pem"), filepath.Join(base, "privkey.pem")
+}
+
+func (m *Manager) resolveCertPaths(domain string) (string, string, bool) {
+	certPath, keyPath := m.realCertPaths(domain)
+	if fileExists(certPath) && fileExists(keyPath) {
+		return certPath, keyPath, false
+	}
+	return m.FallbackCert, m.FallbackKey, true
+}
+
+func (m *Manager) HasDomainCertificate(domain string) bool {
+	certPath, keyPath := m.realCertPaths(domain)
+	return fileExists(certPath) && fileExists(keyPath)
 }
 
 // GenerateConfig renders the site config to a staging file.
@@ -57,13 +90,28 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 		templateContent.WriteString("\n")
 	}
 
+	certPath, keyPath, usingFallbackCert := m.resolveCertPaths(site.Domain)
+	effectiveForceSSL := site.ForceSSL
+	if site.SSL && usingFallbackCert {
+		// Avoid redirecting all HTTP requests to a certificate mismatch while fallback is active.
+		effectiveForceSSL = false
+	}
+
 	// Wrapper for template data
 	data := struct {
 		*models.Site
-		TemplateSnippets string
+		TemplateSnippets  string
+		SSLCertificate    string
+		SSLKey            string
+		EffectiveForceSSL bool
+		UsingFallbackCert bool
 	}{
-		Site:             site,
-		TemplateSnippets: templateContent.String(),
+		Site:              site,
+		TemplateSnippets:  templateContent.String(),
+		SSLCertificate:    certPath,
+		SSLKey:            keyPath,
+		EffectiveForceSSL: effectiveForceSSL,
+		UsingFallbackCert: usingFallbackCert,
 	}
 
 	// Basic server block template
@@ -112,7 +160,7 @@ server {
     {{ end }}
     {{ end }}
 
-    {{ if .ForceSSL }}
+    {{ if .EffectiveForceSSL }}
     location / {
         return 301 https://$host$request_uri;
     }
@@ -192,8 +240,11 @@ server {
     http2 on;
     server_name {{ .Domain }};
 
-    ssl_certificate /etc/letsencrypt/live/{{ .Domain }}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/{{ .Domain }}/privkey.pem;
+    ssl_certificate {{ .SSLCertificate }};
+    ssl_certificate_key {{ .SSLKey }};
+    {{ if .UsingFallbackCert }}
+    # Fallback certificate is active until the domain certificate is issued.
+    {{ end }}
 
     {{ if .Firewall }}
     {{ if .Firewall.BlockRules }}
@@ -416,27 +467,74 @@ func (m *Manager) DeleteStreamConfig(port int) error {
 // For MVP, we assume the staging file is valid if it parses.
 // A robust way is to create a temp nginx.conf that includes the staging file.
 func (m *Manager) Validate(stagingFile string) error {
-	// In a real container, we run nginx -t.
-	// For local dev where nginx might not be installed, we skip or mock.
-
-	// Strategy: use `nginx -t -c /etc/nginx/nginx.conf` but we need to inject our staging file.
-	// Since the main nginx.conf likely includes `/etc/hubfly/sites/*.conf`,
-	// we can temporary symlink staging file to sites/ OR use a specific test config.
-
-	// For MVP, let's try to just syntax check the file if possible, or skip if too complex.
-	// Simpler: Just return nil for now if not in a proper env.
-
+	if _, err := os.Stat(stagingFile); err != nil {
+		return fmt.Errorf("staging config missing: %w", err)
+	}
 	return nil
 }
 
-// Apply moves staging file to live sites dir and reloads
+func (m *Manager) runConfigTest() error {
+	path, err := exec.LookPath("nginx")
+	if err != nil {
+		slog.Warn("Nginx not found, skipping config test")
+		return nil
+	}
+
+	cmd := exec.Command(path, "-t", "-c", m.NginxConf)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Error("Nginx config test failed", "error", err, "output", string(out))
+		return fmt.Errorf("nginx config test failed: %s, output: %s", err, string(out))
+	}
+	slog.Debug("Nginx config test success", "output", string(out))
+	return nil
+}
+
+// Apply writes staging config to live sites dir, validates full nginx tree, and reloads.
 func (m *Manager) Apply(siteID, stagingFile string) error {
 	target := filepath.Join(m.SitesDir, siteID+".conf")
-	if err := os.Rename(stagingFile, target); err != nil {
+	stagingData, err := os.ReadFile(stagingFile)
+	if err != nil {
 		return err
 	}
+
+	var previousData []byte
+	previousExists := false
+	if b, err := os.ReadFile(target); err == nil {
+		previousExists = true
+		previousData = b
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	restorePrevious := func() {
+		if previousExists {
+			_ = os.WriteFile(target, previousData, 0644)
+			return
+		}
+		_ = os.Remove(target)
+	}
+
+	if err := os.WriteFile(target, stagingData, 0644); err != nil {
+		return err
+	}
+
+	if err := m.runConfigTest(); err != nil {
+		restorePrevious()
+		return err
+	}
+
+	if err := m.Reload(); err != nil {
+		restorePrevious()
+		return err
+	}
+
+	if err := os.Remove(stagingFile); err != nil && !os.IsNotExist(err) {
+		slog.Warn("Failed to remove staging config", "file", stagingFile, "error", err)
+	}
+
 	slog.Info("Applied site config", "site_id", siteID, "target", target)
-	return m.Reload()
+	return nil
 }
 
 func (m *Manager) Reload() error {

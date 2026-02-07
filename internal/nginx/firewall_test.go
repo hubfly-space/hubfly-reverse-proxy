@@ -287,3 +287,48 @@ func TestForceSSLDisabledWhileUsingFallbackCert(t *testing.T) {
 		t.Fatalf("expected regular HTTP proxy location when fallback cert is active")
 	}
 }
+
+func TestProxyForwardsPublicHostHeaders(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "nginx_test_forwarded_headers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mgr := NewManager(tmpDir)
+	if err := mgr.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	site := &models.Site{
+		ID:        "test-forwarded-headers",
+		Domain:    "forwarded.local",
+		Upstreams: []string{"127.0.0.1:8080"},
+		SSL:       false,
+	}
+
+	configFile, err := mgr.GenerateConfig(site)
+	if err != nil {
+		t.Fatalf("GenerateConfig failed: %v", err)
+	}
+
+	content, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configStr := string(content)
+
+	expected := []string{
+		"proxy_set_header Host $host;",
+		"proxy_set_header X-Forwarded-Host $host;",
+		"proxy_set_header X-Forwarded-Proto $scheme;",
+		"proxy_set_header X-Forwarded-Port $server_port;",
+		"proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+	}
+
+	for _, e := range expected {
+		if !strings.Contains(configStr, e) {
+			t.Fatalf("expected forwarded header directive not found: %s", e)
+		}
+	}
+}

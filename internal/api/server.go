@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hubfly/hubfly-reverse-proxy/internal/certbot"
@@ -19,20 +20,36 @@ import (
 	"github.com/hubfly/hubfly-reverse-proxy/internal/store"
 )
 
+var certRetrySchedule = []time.Duration{
+	1 * time.Minute,
+	5 * time.Minute,
+	15 * time.Minute,
+	1 * time.Hour,
+	6 * time.Hour,
+	24 * time.Hour,
+}
+
+const certRetrySweepInterval = 30 * time.Second
+
 type Server struct {
 	Store      store.Store
 	Nginx      *nginx.Manager
 	Certbot    *certbot.Manager
 	LogManager *logmanager.Manager
+	retryMu    sync.Mutex
+	retrying   map[string]bool
 }
 
 func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, l *logmanager.Manager) *Server {
-	return &Server{
+	srv := &Server{
 		Store:      s,
 		Nginx:      n,
 		Certbot:    c,
 		LogManager: l,
+		retrying:   make(map[string]bool),
 	}
+	go srv.certRetryLoop()
+	return srv
 }
 
 func (s *Server) Routes() http.Handler {
@@ -250,6 +267,183 @@ func (s *Server) updateStreamStatus(id, status, msg string) {
 	s.Store.SaveStream(stream)
 }
 
+func (s *Server) certRetryLoop() {
+	s.sweepCertRetries()
+
+	ticker := time.NewTicker(certRetrySweepInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.sweepCertRetries()
+	}
+}
+
+func (s *Server) sweepCertRetries() {
+	sites, err := s.Store.ListSites()
+	if err != nil {
+		slog.Error("Failed to list sites for cert retry sweep", "error", err)
+		return
+	}
+
+	now := time.Now()
+	for _, site := range sites {
+		if !site.SSL || site.CertIssueStatus != "retrying" || site.NextCertRetryAt == nil {
+			continue
+		}
+		if now.Before(*site.NextCertRetryAt) {
+			continue
+		}
+		if !s.tryStartRetry(site.ID) {
+			continue
+		}
+
+		siteID := site.ID
+		go func() {
+			defer s.finishRetry(siteID)
+			s.retryCertificate(siteID)
+		}()
+	}
+}
+
+func (s *Server) tryStartRetry(siteID string) bool {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+
+	if s.retrying[siteID] {
+		return false
+	}
+	s.retrying[siteID] = true
+	return true
+}
+
+func (s *Server) finishRetry(siteID string) {
+	s.retryMu.Lock()
+	defer s.retryMu.Unlock()
+	delete(s.retrying, siteID)
+}
+
+func nextCertRetryDelay(retryCount int, reason string) time.Duration {
+	if retryCount < 1 {
+		retryCount = 1
+	}
+
+	idx := retryCount - 1
+	if idx >= len(certRetrySchedule) {
+		idx = len(certRetrySchedule) - 1
+	}
+
+	delay := certRetrySchedule[idx]
+	lowerReason := strings.ToLower(reason)
+	if strings.Contains(lowerReason, "rate limit") || strings.Contains(lowerReason, "too many requests") {
+		if delay < 12*time.Hour {
+			delay = 12 * time.Hour
+		}
+	}
+
+	jitter := time.Duration(rand.Intn(30)) * time.Second
+	return delay + jitter
+}
+
+func (s *Server) markCertRetryNeeded(siteID, reason string) {
+	site, err := s.Store.GetSite(siteID)
+	if err != nil {
+		return
+	}
+
+	site.CertRetryCount++
+	site.LastCertError = reason
+	site.UpdatedAt = time.Now()
+
+	maxRetries := len(certRetrySchedule)
+	if site.CertRetryCount > maxRetries {
+		site.CertIssueStatus = "failed"
+		site.NextCertRetryAt = nil
+		site.Status = "active"
+		site.ErrorMessage = "certificate issuance failed permanently; fallback certificate in use: " + reason
+		if err := s.Store.SaveSite(site); err != nil {
+			slog.Error("Failed to persist terminal certificate failure state", "site_id", siteID, "error", err)
+			return
+		}
+		go s.refreshSiteConfig(site)
+		return
+	}
+
+	delay := nextCertRetryDelay(site.CertRetryCount, reason)
+	nextAttempt := time.Now().Add(delay)
+	site.CertIssueStatus = "retrying"
+	site.NextCertRetryAt = &nextAttempt
+	site.Status = "active"
+	site.ErrorMessage = fmt.Sprintf(
+		"certificate issuance failed, retry %d/%d at %s: %s",
+		site.CertRetryCount,
+		maxRetries,
+		nextAttempt.UTC().Format(time.RFC3339),
+		reason,
+	)
+	if err := s.Store.SaveSite(site); err != nil {
+		slog.Error("Failed to persist certificate retry state", "site_id", siteID, "error", err)
+		return
+	}
+
+	go s.refreshSiteConfig(site)
+}
+
+func (s *Server) clearCertRetryState(siteID string) {
+	site, err := s.Store.GetSite(siteID)
+	if err != nil {
+		return
+	}
+
+	site.CertIssueStatus = "valid"
+	site.CertRetryCount = 0
+	site.NextCertRetryAt = nil
+	site.LastCertError = ""
+	site.ErrorMessage = ""
+	site.UpdatedAt = time.Now()
+	if err := s.Store.SaveSite(site); err != nil {
+		slog.Error("Failed to clear certificate retry state", "site_id", siteID, "error", err)
+	}
+}
+
+func (s *Server) issueCertificate(domain string) error {
+	if err := s.Certbot.Issue(domain); err != nil {
+		return err
+	}
+
+	if !s.Nginx.HasDomainCertificate(domain) {
+		return fmt.Errorf("certificate files missing after issuance for domain %s", domain)
+	}
+
+	return nil
+}
+
+func (s *Server) retryCertificate(siteID string) {
+	site, err := s.Store.GetSite(siteID)
+	if err != nil {
+		return
+	}
+	if !site.SSL {
+		return
+	}
+
+	slog.Info("Retrying certificate issuance", "site_id", site.ID, "domain", site.Domain, "retry_count", site.CertRetryCount)
+	s.updateStatus(site.ID, "provisioning", "retrying certificate issuance")
+
+	if err := s.issueCertificate(site.Domain); err != nil {
+		slog.Warn("Certificate retry failed", "site_id", site.ID, "domain", site.Domain, "error", err)
+		s.markCertRetryNeeded(site.ID, err.Error())
+		return
+	}
+
+	s.clearCertRetryState(site.ID)
+
+	updatedSite, err := s.Store.GetSite(site.ID)
+	if err != nil {
+		return
+	}
+	s.refreshSiteConfig(updatedSite)
+}
+
 func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -271,6 +465,9 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		site.CreatedAt = time.Now()
 		site.UpdatedAt = time.Now()
 		site.Status = "provisioning"
+		if site.SSL {
+			site.CertIssueStatus = "pending"
+		}
 
 		// save initial state
 		if err := s.Store.SaveSite(&site); err != nil {
@@ -299,6 +496,12 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(id, "/logs") {
 		realID := strings.TrimSuffix(id, "/logs")
 		s.handleSiteLogs(w, r, realID)
+		return
+	}
+
+	if strings.HasSuffix(id, "/cert/retry") {
+		realID := strings.TrimSuffix(id, "/cert/retry")
+		s.handleSiteCertRetry(w, r, realID)
 		return
 	}
 
@@ -375,6 +578,14 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 		if input.SSL != nil && *input.SSL != site.SSL {
 			site.SSL = *input.SSL
 			needsFullProvision = true
+
+			if !site.SSL {
+				site.CertIssueStatus = ""
+				site.CertRetryCount = 0
+				site.NextCertRetryAt = nil
+				site.LastCertError = ""
+				site.ErrorMessage = ""
+			}
 		}
 
 		// Apply other updates
@@ -392,6 +603,14 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		if input.Firewall != nil {
 			site.Firewall = input.Firewall
+		}
+
+		if site.SSL && needsFullProvision {
+			site.CertIssueStatus = "pending"
+			site.CertRetryCount = 0
+			site.NextCertRetryAt = nil
+			site.LastCertError = ""
+			site.ErrorMessage = ""
 		}
 
 		site.UpdatedAt = time.Now()
@@ -416,7 +635,18 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) refreshSiteConfig(site *models.Site) {
 	slog.Info("Refreshing site config", "site_id", site.ID, "domain", site.Domain)
-	s.updateStatus(site.ID, "provisioning", "refreshing config")
+	preserveMessage := ""
+	if currentSite, err := s.Store.GetSite(site.ID); err == nil {
+		if currentSite.CertIssueStatus == "retrying" || currentSite.CertIssueStatus == "failed" {
+			preserveMessage = currentSite.ErrorMessage
+		}
+	}
+
+	provisioningMessage := "refreshing config"
+	if preserveMessage != "" {
+		provisioningMessage = preserveMessage
+	}
+	s.updateStatus(site.ID, "provisioning", provisioningMessage)
 
 	config, err := s.Nginx.GenerateConfig(site)
 	if err != nil {
@@ -438,7 +668,7 @@ func (s *Server) refreshSiteConfig(site *models.Site) {
 	}
 
 	slog.Info("Site config refreshed successfully", "site_id", site.ID)
-	s.updateStatus(site.ID, "active", "")
+	s.updateStatus(site.ID, "active", preserveMessage)
 }
 
 func (s *Server) provisionSite(site *models.Site) {
@@ -490,34 +720,31 @@ func (s *Server) provisionSite(site *models.Site) {
 	// Handle SSL
 	slog.Info("Starting SSL provisioning", "site_id", site.ID, "domain", site.Domain)
 	s.updateStatus(site.ID, "provisioning", "issuing certificate")
-	if err := s.Certbot.Issue(site.Domain); err != nil {
+	if trackedSite, err := s.Store.GetSite(site.ID); err == nil {
+		trackedSite.CertIssueStatus = "pending"
+		trackedSite.CertRetryCount = 0
+		trackedSite.NextCertRetryAt = nil
+		trackedSite.LastCertError = ""
+		trackedSite.ErrorMessage = ""
+		trackedSite.UpdatedAt = time.Now()
+		_ = s.Store.SaveSite(trackedSite)
+	}
+
+	if err := s.issueCertificate(site.Domain); err != nil {
 		slog.Error("Certificate issuance failed", "site_id", site.ID, "domain", site.Domain, "error", err)
-		s.updateStatus(site.ID, "cert-failed", err.Error())
+		s.markCertRetryNeeded(site.ID, err.Error())
 		return
 	}
 
-	// Re-apply with SSL
-	site.SSL = true
-	site.CertIssueStatus = "valid"
-	// Update store with SSL=true
-	s.Store.SaveSite(site)
-
-	stagingSSL, err := s.Nginx.GenerateConfig(site)
-	if err != nil {
-		slog.Error("SSL config generation failed", "site_id", site.ID, "error", err)
-		s.updateStatus(site.ID, "error", "ssl config gen failed: "+err.Error())
-		return
-	}
-
-	// Validate & Apply
-	if err := s.Nginx.Apply(site.ID, stagingSSL); err != nil {
-		slog.Error("SSL config application failed", "site_id", site.ID, "error", err)
-		s.updateStatus(site.ID, "error", "ssl apply failed: "+err.Error())
-		return
-	}
+	s.clearCertRetryState(site.ID)
 
 	slog.Info("Site provisioned with SSL", "site_id", site.ID)
-	s.updateStatus(site.ID, "active", "")
+	updatedSite, err := s.Store.GetSite(site.ID)
+	if err != nil {
+		slog.Error("Failed to load site after certificate issuance", "site_id", site.ID, "error", err)
+		return
+	}
+	s.refreshSiteConfig(updatedSite)
 }
 
 func (s *Server) updateStatus(id, status, msg string) {
@@ -596,6 +823,52 @@ func (s *Server) handleSiteLogs(w http.ResponseWriter, r *http.Request, siteID s
 		}
 		jsonResponse(w, 200, logs)
 	}
+}
+
+func (s *Server) handleSiteCertRetry(w http.ResponseWriter, r *http.Request, siteID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+
+	site, err := s.Store.GetSite(siteID)
+	if err != nil {
+		errorResponse(w, 404, "site not found")
+		return
+	}
+	if !site.SSL {
+		errorResponse(w, 400, "ssl is disabled for this site")
+		return
+	}
+
+	if !s.tryStartRetry(site.ID) {
+		errorResponse(w, 409, "certificate retry already in progress")
+		return
+	}
+
+	now := time.Now()
+	site.CertIssueStatus = "retrying"
+	site.NextCertRetryAt = &now
+	site.ErrorMessage = "manual certificate retry requested"
+	site.UpdatedAt = now
+	if err := s.Store.SaveSite(site); err != nil {
+		s.finishRetry(site.ID)
+		errorResponse(w, 500, "failed to persist retry state: "+err.Error())
+		return
+	}
+
+	siteIDCopy := site.ID
+	go func() {
+		defer s.finishRetry(siteIDCopy)
+		s.retryCertificate(siteIDCopy)
+	}()
+
+	jsonResponse(w, 202, map[string]interface{}{
+		"status":             "retry-started",
+		"site_id":            site.ID,
+		"cert_issue_status":  site.CertIssueStatus,
+		"next_cert_retry_at": site.NextCertRetryAt,
+	})
 }
 
 func (s *Server) handleSiteFirewall(w http.ResponseWriter, r *http.Request, siteID string) {

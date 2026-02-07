@@ -314,6 +314,36 @@ curl -X DELETE "http://localhost:81/v1/sites/example.local/firewall"
 
 ---
 
+### 10. Trigger Manual Certificate Retry
+Force an immediate certificate issuance retry for an SSL-enabled site.
+
+**Endpoint:** `POST /v1/sites/{id}/cert/retry`
+
+**Example:**
+```bash
+curl -X POST http://localhost:81/v1/sites/example.local/cert/retry
+```
+
+This endpoint is useful when:
+- DNS propagation has completed and you want to retry immediately.
+- A previous attempt failed and you do not want to wait for the next scheduled retry.
+
+### 11. Run Fallback/Rollback Integration Checks
+Validate fallback certificate behavior, manual retry endpoint wiring, rollback safety on invalid config, and startup repair of stale SSL cert paths.
+
+```bash
+chmod +x ./integration_fallback_cert_test.sh
+./integration_fallback_cert_test.sh
+```
+
+Optional environment flags:
+- `RESET_STACK=true`: runs `docker compose down -v` before starting tests.
+- `CLEANUP_ON_EXIT=true`: tears the stack down after test completion.
+- `API_BASE`: override API URL (default `http://localhost:81`).
+- `CONTAINER_NAME`: override container name (default `hubfly-reverse-proxy`).
+
+---
+
 ## Project Structure
 
 - **/cmd/hubfly**: Main entry point.

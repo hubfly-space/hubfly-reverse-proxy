@@ -237,13 +237,53 @@ func TestSSLConfig(t *testing.T) {
 
 	expectedStrings := []string{
 		"listen 443 ssl;",
-		"ssl_certificate /etc/letsencrypt/live/ssl.local/fullchain.pem;",
-		"ssl_certificate_key /etc/letsencrypt/live/ssl.local/privkey.pem;",
+		"ssl_certificate " + mgr.FallbackCert + ";",
+		"ssl_certificate_key " + mgr.FallbackKey + ";",
 	}
 
 	for _, s := range expectedStrings {
 		if !strings.Contains(configStr, s) {
 			t.Errorf("Config missing SSL directive: %s", s)
 		}
+	}
+}
+
+func TestForceSSLDisabledWhileUsingFallbackCert(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "nginx_test_force_ssl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mgr := NewManager(tmpDir)
+	if err := mgr.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	site := &models.Site{
+		ID:        "test-fallback-force-ssl",
+		Domain:    "fallback.local",
+		Upstreams: []string{"127.0.0.1:8080"},
+		SSL:       true,
+		ForceSSL:  true,
+	}
+
+	configFile, err := mgr.GenerateConfig(site)
+	if err != nil {
+		t.Fatalf("GenerateConfig failed: %v", err)
+	}
+
+	content, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configStr := string(content)
+
+	if strings.Contains(configStr, "return 301 https://$host$request_uri;") {
+		t.Fatalf("expected HTTP->HTTPS redirect to be disabled while using fallback cert")
+	}
+
+	if !strings.Contains(configStr, "proxy_pass $upstream_endpoint;") {
+		t.Fatalf("expected regular HTTP proxy location when fallback cert is active")
 	}
 }

@@ -329,7 +329,7 @@ This endpoint is useful when:
 - A previous attempt failed and you do not want to wait for the next scheduled retry.
 
 ### 11. Run Fallback/Rollback Integration Checks
-Validate fallback certificate behavior, manual retry endpoint wiring, rollback safety on invalid config, and startup repair of stale SSL cert paths.
+Validate fallback certificate behavior, manual retry endpoint wiring, rollback safety on invalid config, runtime-resolved stream upstreams, upstream-crash resilience (reload/restart with missing upstream), and startup repair of stale SSL cert paths.
 
 ```bash
 chmod +x ./integration_fallback_cert_test.sh
@@ -341,6 +341,7 @@ Optional environment flags:
 - `CLEANUP_ON_EXIT=true`: tears the stack down after test completion.
 - `API_BASE`: override API URL (default `http://localhost:81`).
 - `CONTAINER_NAME`: override container name (default `hubfly-reverse-proxy`).
+- `CRASH_UPSTREAM_IMAGE`: local image used for crash-resilience checks (defaults to first available of `nginx:stable-alpine`, `nginx:alpine`, then falls back to proxy container image ID).
 
 ---
 

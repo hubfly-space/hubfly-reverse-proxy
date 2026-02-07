@@ -347,6 +347,7 @@ func nextCertRetryDelay(retryCount int, reason string) time.Duration {
 func (s *Server) markCertRetryNeeded(siteID, reason string) {
 	site, err := s.Store.GetSite(siteID)
 	if err != nil {
+		slog.Error("Failed to load site for cert retry", "site_id", siteID, "error", err)
 		return
 	}
 
@@ -720,14 +721,30 @@ func (s *Server) provisionSite(site *models.Site) {
 	// Handle SSL
 	slog.Info("Starting SSL provisioning", "site_id", site.ID, "domain", site.Domain)
 	s.updateStatus(site.ID, "provisioning", "issuing certificate")
-	if trackedSite, err := s.Store.GetSite(site.ID); err == nil {
-		trackedSite.CertIssueStatus = "pending"
-		trackedSite.CertRetryCount = 0
-		trackedSite.NextCertRetryAt = nil
-		trackedSite.LastCertError = ""
-		trackedSite.ErrorMessage = ""
-		trackedSite.UpdatedAt = time.Now()
-		_ = s.Store.SaveSite(trackedSite)
+	trackedSite, err := s.Store.GetSite(site.ID)
+	if err != nil {
+		slog.Error("Failed to load site before certificate issuance", "site_id", site.ID, "error", err)
+		return
+	}
+	trackedSite.CertIssueStatus = "pending"
+	trackedSite.CertRetryCount = 0
+	trackedSite.NextCertRetryAt = nil
+	trackedSite.LastCertError = ""
+	trackedSite.ErrorMessage = ""
+	trackedSite.UpdatedAt = time.Now()
+	if err := s.Store.SaveSite(trackedSite); err != nil {
+		slog.Error(
+			"Failed to persist site certificate state reset",
+			"site_id", site.ID,
+			"cert_issue_status", trackedSite.CertIssueStatus,
+			"cert_retry_count", trackedSite.CertRetryCount,
+			"next_cert_retry_at", trackedSite.NextCertRetryAt,
+			"last_cert_error", trackedSite.LastCertError,
+			"error_message", trackedSite.ErrorMessage,
+			"updated_at", trackedSite.UpdatedAt,
+			"error", err,
+		)
+		return
 	}
 
 	if err := s.issueCertificate(site.Domain); err != nil {

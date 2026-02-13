@@ -92,10 +92,6 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 
 	certPath, keyPath, usingFallbackCert := m.resolveCertPaths(site.Domain)
 	effectiveForceSSL := site.ForceSSL
-	if site.SSL && usingFallbackCert {
-		// Avoid redirecting all HTTP requests to a certificate mismatch while fallback is active.
-		effectiveForceSSL = false
-	}
 
 	// Wrapper for template data
 	data := struct {
@@ -169,19 +165,6 @@ server {
     location / {
         return 301 https://$host$request_uri;
     }
-    location /ws/ {
-        set $upstream_endpoint "http://{{ index .Upstreams 0 }}";
-        proxy_pass $upstream_endpoint;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Port $server_port;
-    }
 
     {{ else }}
     location / {
@@ -214,7 +197,6 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -319,7 +301,6 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -333,20 +314,6 @@ server {
 
         {{ .TemplateSnippets }}
         {{ .ExtraConfig }}
-    }
-
-    location /ws/ {
-        set $upstream_endpoint "http://{{ index .Upstreams 0 }}";
-        proxy_pass $upstream_endpoint;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Port $server_port;
     }
 
     error_page 403 /403.html;

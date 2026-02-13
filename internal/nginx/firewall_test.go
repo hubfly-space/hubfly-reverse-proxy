@@ -248,7 +248,7 @@ func TestSSLConfig(t *testing.T) {
 	}
 }
 
-func TestForceSSLDisabledWhileUsingFallbackCert(t *testing.T) {
+func TestForceSSLRemainsEnabledWhileUsingFallbackCert(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "nginx_test_force_ssl")
 	if err != nil {
 		t.Fatal(err)
@@ -279,12 +279,94 @@ func TestForceSSLDisabledWhileUsingFallbackCert(t *testing.T) {
 	}
 	configStr := string(content)
 
-	if strings.Contains(configStr, "return 301 https://$host$request_uri;") {
-		t.Fatalf("expected HTTP->HTTPS redirect to be disabled while using fallback cert")
+	if !strings.Contains(configStr, "return 301 https://$host$request_uri;") {
+		t.Fatalf("expected HTTP->HTTPS redirect to remain enabled while using fallback cert")
+	}
+}
+
+func TestForceSSLAlwaysRedirectsHTTP(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "nginx_test_force_ssl_redirect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mgr := NewManager(tmpDir)
+	if err := mgr.EnsureDirs(); err != nil {
+		t.Fatal(err)
 	}
 
-	if !strings.Contains(configStr, "proxy_pass $upstream_endpoint;") {
-		t.Fatalf("expected regular HTTP proxy location when fallback cert is active")
+	site := &models.Site{
+		ID:        "test-force-ssl-redirect",
+		Domain:    "force-ssl-redirect.local",
+		Upstreams: []string{"127.0.0.1:8080"},
+		ForceSSL:  true,
+	}
+
+	configFile, err := mgr.GenerateConfig(site)
+	if err != nil {
+		t.Fatalf("GenerateConfig failed: %v", err)
+	}
+
+	content, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configStr := string(content)
+
+	if !strings.Contains(configStr, "return 301 https://$host$request_uri;") {
+		t.Fatalf("expected ForceSSL block to always redirect HTTP to HTTPS")
+	}
+
+	if strings.Contains(configStr, `$http_upgrade`) {
+		t.Fatalf("did not expect websocket upgrade-based redirect bypass in ForceSSL block")
+	}
+}
+
+func TestGeneratedConfigHasNoLegacyWebSocketLocationOrForcedUpgradeHeader(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "nginx_test_ws_cleanup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mgr := NewManager(tmpDir)
+	if err := mgr.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	site := &models.Site{
+		ID:        "test-ws-cleanup",
+		Domain:    "ws-cleanup.local",
+		Upstreams: []string{"127.0.0.1:8080"},
+		SSL:       true,
+	}
+
+	configFile, err := mgr.GenerateConfig(site)
+	if err != nil {
+		t.Fatalf("GenerateConfig failed: %v", err)
+	}
+
+	content, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configStr := string(content)
+
+	if strings.Contains(configStr, "location /ws/ {") {
+		t.Fatalf("did not expect legacy /ws/ location in generated config")
+	}
+
+	if strings.Contains(configStr, `proxy_set_header Connection "upgrade";`) {
+		t.Fatalf("did not expect forced Connection: upgrade header in general proxy locations")
+	}
+
+	if !strings.Contains(configStr, "proxy_set_header Upgrade $http_upgrade;") {
+		t.Fatalf("expected websocket upgrade header support in proxied locations")
+	}
+
+	if !strings.Contains(configStr, "proxy_set_header Connection $connection_upgrade;") {
+		t.Fatalf("expected websocket connection upgrade mapping in proxied locations")
 	}
 }
 

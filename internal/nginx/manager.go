@@ -136,9 +136,9 @@ server {
     {{ range $path, $methods := .Firewall.BlockRules.PathMethods }}
     location ~ {{ $path }} {
         if ($request_method ~* "({{ join $methods "|" }})") { return 405; }
-        # Fallback to main proxy pass if method allowed? 
+        # Fallback to main proxy pass if method allowed?
         # Note: 'location' blocks capture request. We need to proxy_pass here too if not blocked.
-        # But duplication is messy. 
+        # But duplication is messy.
         # Better strategy: strict match location with limit_except or if.
         # If we use location ~ $path, it takes precedence.
         # So we must include proxy logic inside.
@@ -174,7 +174,7 @@ server {
         {{ range .Firewall.IPRules }}
         {{ .Action }} {{ .Value }};
         {{ end }}
-        
+
         {{ if .Firewall.BlockRules }}
         {{ if .Firewall.BlockRules.UserAgents }}
         if ($http_user_agent ~* "({{ join .Firewall.BlockRules.UserAgents "|" }})") { return 403; }

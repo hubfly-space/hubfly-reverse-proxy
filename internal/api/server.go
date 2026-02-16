@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -109,6 +110,38 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]string{"status": "ok"})
 }
 
+type createStreamRequest struct {
+	ID            string `json:"id"`
+	ListenPort    int    `json:"listen_port"`
+	Upstream      string `json:"upstream"`
+	ContainerPort int    `json:"container_port,omitempty"`
+	Protocol      string `json:"protocol"`
+	Domain        string `json:"domain,omitempty"`
+}
+
+func normalizeStreamUpstream(upstream string, containerPort int) (string, error) {
+	upstream = strings.TrimSpace(upstream)
+	if upstream == "" {
+		return "", fmt.Errorf("upstream is required")
+	}
+
+	if containerPort == 0 {
+		return upstream, nil
+	}
+	if containerPort < 1 || containerPort > 65535 {
+		return "", fmt.Errorf("container_port must be between 1 and 65535")
+	}
+
+	host := upstream
+	if splitHost, _, err := net.SplitHostPort(upstream); err == nil {
+		host = splitHost
+	} else if strings.HasPrefix(upstream, "[") && strings.HasSuffix(upstream, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(upstream, "["), "]")
+	}
+
+	return net.JoinHostPort(host, strconv.Itoa(containerPort)), nil
+}
+
 func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -119,11 +152,26 @@ func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonResponse(w, 200, streams)
 	case http.MethodPost:
-		var stream models.Stream
-		if err := json.NewDecoder(r.Body).Decode(&stream); err != nil {
+		var req createStreamRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			errorResponse(w, 400, "invalid json")
 			return
 		}
+
+		upstream, err := normalizeStreamUpstream(req.Upstream, req.ContainerPort)
+		if err != nil {
+			errorResponse(w, 400, err.Error())
+			return
+		}
+
+		stream := models.Stream{
+			ID:         strings.TrimSpace(req.ID),
+			ListenPort: req.ListenPort,
+			Upstream:   upstream,
+			Protocol:   strings.ToLower(strings.TrimSpace(req.Protocol)),
+			Domain:     strings.TrimSpace(req.Domain),
+		}
+
 		if stream.ListenPort == 0 {
 			streams, err := s.Store.ListStreams()
 			if err != nil {

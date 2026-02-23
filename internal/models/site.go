@@ -11,6 +11,7 @@ type Site struct {
 	Upstreams          []string          `json:"upstreams"`
 	UpstreamContainers []string          `json:"upstream_containers,omitempty"`
 	UpstreamNetworks   []string          `json:"upstream_networks,omitempty"`
+	LoadBalancing      *LoadBalancing    `json:"load_balancing,omitempty"`
 	ForceSSL           bool              `json:"force_ssl"` // Redirect HTTP to HTTPS
 	SSL                bool              `json:"ssl"`       // Enable SSL (requires cert)
 	Templates          []string          `json:"templates"`
@@ -36,6 +37,12 @@ type APIResponse struct {
 	Error string      `json:"error,omitempty"`
 	Code  int         `json:"code,omitempty"`
 	Data  interface{} `json:"data,omitempty"`
+}
+
+// LoadBalancing configures site upstream balancing behavior.
+type LoadBalancing struct {
+	Algorithm string `json:"algorithm,omitempty"` // round_robin (default), least_conn, ip_hash
+	Weights   []int  `json:"weights,omitempty"`   // Per-upstream weight, aligned by upstream index
 }
 
 // FirewallConfig holds all firewall related settings

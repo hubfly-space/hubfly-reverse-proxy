@@ -128,7 +128,11 @@ curl -X POST http://localhost:81/v1/sites \
   -d '{
     "id": "example.local",
     "domain": "example.local",
-    "upstreams": ["simple-server:80"],
+    "upstreams": ["simple-server:80", "simple-server-2:80"],
+    "load_balancing": {
+      "algorithm": "round_robin",
+      "weights": [5, 1]
+    },
     "ssl": false,
     "force_ssl": false,
     "templates": []
@@ -348,9 +352,40 @@ curl -X DELETE "http://localhost:81/v1/sites/example.local/firewall?section=rate
 curl -X DELETE "http://localhost:81/v1/sites/example.local/firewall"
 ```
 
+### 10. Load Balancing (Sites Only)
+Hubfly supports HTTP upstream load balancing per site.
+
+- `round_robin` (default)
+- `least_conn`
+- `ip_hash` (basic sticky routing by client IP)
+- weighted balancing via `load_balancing.weights` aligned with `upstreams`
+
+Examples:
+```bash
+# Switch to least connections
+curl -X PATCH http://localhost:81/v1/sites/example.local \
+  -H "Content-Type: application/json" \
+  -d '{
+    "load_balancing": {
+      "algorithm": "least_conn",
+      "weights": [1, 1]
+    }
+  }'
+
+# Use IP hash stickiness (weights must be 1)
+curl -X PATCH http://localhost:81/v1/sites/example.local \
+  -H "Content-Type: application/json" \
+  -d '{
+    "load_balancing": {
+      "algorithm": "ip_hash",
+      "weights": [1, 1]
+    }
+  }'
+```
+
 ---
 
-### 10. Trigger Manual Certificate Retry
+### 11. Trigger Manual Certificate Retry
 Force an immediate certificate issuance retry for an SSL-enabled site.
 
 **Endpoint:** `POST /v1/sites/{id}/cert/retry`
@@ -364,7 +399,7 @@ This endpoint is useful when:
 - DNS propagation has completed and you want to retry immediately.
 - A previous attempt failed and you do not want to wait for the next scheduled retry.
 
-### 11. Run Fallback/Rollback Integration Checks
+### 12. Run Fallback/Rollback Integration Checks
 Validate fallback certificate behavior, manual retry endpoint wiring, rollback safety on invalid config, runtime-resolved stream upstreams, upstream-crash resilience (reload/restart with missing upstream), and startup repair of stale SSL cert paths.
 
 ```bash

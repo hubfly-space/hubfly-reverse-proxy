@@ -261,6 +261,54 @@ func (s *Server) normalizeSiteUpstreams(upstreamsInput []string) ([]string, []st
 	return normalized, containers, networks, nil
 }
 
+func normalizeSiteLoadBalancing(lb *models.LoadBalancing, upstreams []string) (*models.LoadBalancing, error) {
+	if len(upstreams) == 0 {
+		return nil, fmt.Errorf("at least one upstream is required")
+	}
+
+	normalized := &models.LoadBalancing{}
+	if lb != nil {
+		*normalized = *lb
+	}
+
+	algorithm := strings.ToLower(strings.TrimSpace(normalized.Algorithm))
+	switch algorithm {
+	case "", "round_robin":
+		algorithm = "round_robin"
+	case "least_conn", "ip_hash":
+	default:
+		return nil, fmt.Errorf("invalid load balancing algorithm: %s", normalized.Algorithm)
+	}
+	normalized.Algorithm = algorithm
+
+	if len(normalized.Weights) == 0 {
+		normalized.Weights = make([]int, len(upstreams))
+		for i := range normalized.Weights {
+			normalized.Weights[i] = 1
+		}
+	} else {
+		if len(normalized.Weights) != len(upstreams) {
+			return nil, fmt.Errorf("load balancing weights must match upstream count")
+		}
+		for i, weight := range normalized.Weights {
+			if weight < 1 {
+				return nil, fmt.Errorf("load balancing weight at index %d must be >= 1", i)
+			}
+		}
+	}
+
+	// Keep compatibility with nginx behavior and avoid invalid configs.
+	if normalized.Algorithm == "ip_hash" {
+		for i, weight := range normalized.Weights {
+			if weight != 1 {
+				return nil, fmt.Errorf("ip_hash does not support custom weights, weight at index %d must be 1", i)
+			}
+		}
+	}
+
+	return normalized, nil
+}
+
 func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -878,6 +926,11 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		site.Upstreams = normalizedUpstreams
 		site.UpstreamContainers = containers
 		site.UpstreamNetworks = networks
+		site.LoadBalancing, err = normalizeSiteLoadBalancing(site.LoadBalancing, site.Upstreams)
+		if err != nil {
+			errorResponse(w, 400, err.Error())
+			return
+		}
 		if site.ID == "" {
 			site.ID = site.Domain // Simple ID generation
 		}
@@ -970,6 +1023,7 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 		var input struct {
 			Domain          *string                `json:"domain"`
 			Upstreams       []string               `json:"upstreams"`
+			LoadBalancing   *models.LoadBalancing  `json:"load_balancing"`
 			ForceSSL        *bool                  `json:"force_ssl"`
 			SSL             *bool                  `json:"ssl"`
 			ExtraConfig     *string                `json:"extra_config"`
@@ -1018,6 +1072,9 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 			site.UpstreamContainers = containers
 			site.UpstreamNetworks = networks
 		}
+		if input.LoadBalancing != nil {
+			site.LoadBalancing = input.LoadBalancing
+		}
 		if input.ForceSSL != nil {
 			site.ForceSSL = *input.ForceSSL
 		}
@@ -1037,6 +1094,12 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 			site.NextCertRetryAt = nil
 			site.LastCertError = ""
 			site.ErrorMessage = ""
+		}
+
+		site.LoadBalancing, err = normalizeSiteLoadBalancing(site.LoadBalancing, site.Upstreams)
+		if err != nil {
+			errorResponse(w, 400, err.Error())
+			return
 		}
 
 		site.UpdatedAt = time.Now()

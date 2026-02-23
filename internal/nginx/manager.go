@@ -16,6 +16,26 @@ import (
 	"github.com/hubfly/hubfly-reverse-proxy/internal/models"
 )
 
+type upstreamTarget struct {
+	Address string
+	Weight  int
+}
+
+func sanitizeName(input string) string {
+	if strings.TrimSpace(input) == "" {
+		return "default"
+	}
+	var b strings.Builder
+	for _, r := range input {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteByte('_')
+	}
+	return b.String()
+}
+
 type Manager struct {
 	SitesDir     string
 	StreamsDir   string
@@ -163,6 +183,33 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 
 	certPath, keyPath, usingFallbackCert := m.resolveCertPaths(site.Domain)
 	effectiveForceSSL := site.ForceSSL
+	lbAlgorithm := "round_robin"
+	lbWeights := make([]int, len(site.Upstreams))
+	for i := range lbWeights {
+		lbWeights[i] = 1
+	}
+	if site.LoadBalancing != nil {
+		if strings.TrimSpace(site.LoadBalancing.Algorithm) != "" {
+			lbAlgorithm = strings.ToLower(strings.TrimSpace(site.LoadBalancing.Algorithm))
+		}
+		if len(site.LoadBalancing.Weights) == len(site.Upstreams) {
+			copy(lbWeights, site.LoadBalancing.Weights)
+		}
+	}
+
+	upstreamName := "hubfly_upstream_" + sanitizeName(site.ID)
+	upstreamTargets := make([]upstreamTarget, 0, len(site.Upstreams))
+	for i, endpoint := range site.Upstreams {
+		weight := 1
+		if i < len(lbWeights) && lbWeights[i] > 0 {
+			weight = lbWeights[i]
+		}
+		upstreamTargets = append(upstreamTargets, upstreamTarget{
+			Address: endpoint,
+			Weight:  weight,
+		})
+	}
+	proxyPassTarget := fmt.Sprintf("http://%s", upstreamName)
 
 	// Wrapper for template data
 	data := struct {
@@ -175,6 +222,10 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 		LogsDir           string
 		WebrootDir        string
 		StaticDir         string
+		UpstreamName      string
+		UpstreamTargets   []upstreamTarget
+		LoadBalanceAlgo   string
+		ProxyPassTarget   string
 	}{
 		Site:              site,
 		TemplateSnippets:  templateContent.String(),
@@ -185,6 +236,10 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 		LogsDir:           m.LogsDir,
 		WebrootDir:        m.WebrootDir,
 		StaticDir:         m.StaticDir,
+		UpstreamName:      upstreamName,
+		UpstreamTargets:   upstreamTargets,
+		LoadBalanceAlgo:   lbAlgorithm,
+		ProxyPassTarget:   proxyPassTarget,
 	}
 
 	// Basic server block template
@@ -197,6 +252,19 @@ limit_req_zone $binary_remote_addr zone=zone_{{ .ID }}:10m rate={{ .Firewall.Rat
 {{ end }}
 {{ end }}
 {{ end }}
+
+upstream {{ .UpstreamName }} {
+    {{ if eq .LoadBalanceAlgo "least_conn" }}
+    least_conn;
+    {{ end }}
+    {{ if eq .LoadBalanceAlgo "ip_hash" }}
+    ip_hash;
+    {{ end }}
+    {{ range .UpstreamTargets }}
+    server {{ .Address }} weight={{ .Weight }};
+    {{ end }}
+    keepalive 32;
+}
 
 server {
     listen 80;
@@ -219,7 +287,7 @@ server {
         # Better strategy: strict match location with limit_except or if.
         # If we use location ~ $path, it takes precedence.
         # So we must include proxy logic inside.
-        set $upstream_endpoint "http://{{ index $.Upstreams 0 }}";
+        set $upstream_endpoint "{{ $.ProxyPassTarget }}";
         proxy_pass $upstream_endpoint;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -245,7 +313,7 @@ server {
 
     {{ else }}
     location / {
-        set $upstream_endpoint "http://{{ index .Upstreams 0 }}";
+        set $upstream_endpoint "{{ .ProxyPassTarget }}";
 
         {{ if .Firewall }}
         {{ range .Firewall.IPRules }}
@@ -329,7 +397,7 @@ server {
     {{ range $path, $methods := .Firewall.BlockRules.PathMethods }}
     location ~ {{ $path }} {
         if ($request_method ~* "({{ join $methods "|" }})") { return 405; }
-        set $upstream_endpoint "http://{{ index $.Upstreams 0 }}";
+        set $upstream_endpoint "{{ $.ProxyPassTarget }}";
         proxy_pass $upstream_endpoint;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -349,7 +417,7 @@ server {
     {{ end }}
 
     location / {
-        set $upstream_endpoint "http://{{ index .Upstreams 0 }}";
+        set $upstream_endpoint "{{ .ProxyPassTarget }}";
 
         {{ if .Firewall }}
         {{ range .Firewall.IPRules }}

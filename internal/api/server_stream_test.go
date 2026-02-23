@@ -1,6 +1,24 @@
 package api
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
+
+type fakeResolver struct{}
+
+func (fakeResolver) Resolve(upstream string, overridePort int) (string, error) {
+	if upstream == "  " {
+		return "", fmt.Errorf("upstream is required")
+	}
+	if overridePort < 0 || overridePort > 65535 {
+		return "", fmt.Errorf("container_port must be between 1 and 65535")
+	}
+	if overridePort == 0 {
+		return "10.10.0.12:5432", nil
+	}
+	return fmt.Sprintf("10.10.0.12:%d", overridePort), nil
+}
 
 func TestNormalizeStreamUpstream(t *testing.T) {
 	t.Parallel()
@@ -13,28 +31,16 @@ func TestNormalizeStreamUpstream(t *testing.T) {
 		wantErr       string
 	}{
 		{
-			name:          "keeps upstream when container port omitted",
+			name:          "resolves upstream with existing port",
 			upstream:      "postgres-db:5432",
 			containerPort: 0,
-			want:          "postgres-db:5432",
+			want:          "10.10.0.12:5432",
 		},
 		{
-			name:          "builds upstream from host and container port",
+			name:          "resolves upstream with override port",
 			upstream:      "postgres-db",
-			containerPort: 5432,
-			want:          "postgres-db:5432",
-		},
-		{
-			name:          "replaces upstream port with container port",
-			upstream:      "postgres-db:15432",
-			containerPort: 5432,
-			want:          "postgres-db:5432",
-		},
-		{
-			name:          "supports bracketed ipv6 host",
-			upstream:      "[2001:db8::1]",
 			containerPort: 3306,
-			want:          "[2001:db8::1]:3306",
+			want:          "10.10.0.12:3306",
 		},
 		{
 			name:          "rejects empty upstream",
@@ -50,12 +56,13 @@ func TestNormalizeStreamUpstream(t *testing.T) {
 		},
 	}
 
+	resolver := fakeResolver{}
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := normalizeStreamUpstream(tc.upstream, tc.containerPort)
+			got, err := normalizeStreamUpstream(resolver, tc.upstream, tc.containerPort)
 			if tc.wantErr != "" {
 				if err == nil {
 					t.Fatalf("expected error %q, got nil", tc.wantErr)

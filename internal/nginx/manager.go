@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"text/template"
+	"time"
 
 	"github.com/hubfly/hubfly-reverse-proxy/internal/models"
 )
@@ -19,19 +22,83 @@ type Manager struct {
 	StagingDir   string
 	TemplatesDir string
 	NginxConf    string // Path to main nginx.conf
+	NginxBin     string
 	FallbackCert string
 	FallbackKey  string
+	CertsDir     string
+	WebrootDir   string
+	StaticDir    string
+	LogsDir      string
+	PIDFile      string
 }
 
-func NewManager(baseDir string) *Manager {
+type Options struct {
+	NginxConf  string
+	NginxBin   string
+	CertsDir   string
+	WebrootDir string
+	StaticDir  string
+	LogsDir    string
+	PIDFile    string
+}
+
+type Health struct {
+	Available bool   `json:"available"`
+	Running   bool   `json:"running"`
+	Binary    string `json:"binary,omitempty"`
+	Version   string `json:"version,omitempty"`
+	Config    string `json:"config"`
+	PIDFile   string `json:"pid_file"`
+	PID       int    `json:"pid,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+func NewManager(baseDir string, opts ...Options) *Manager {
+	cfg := Options{
+		NginxConf:  filepath.Join(baseDir, "nginx", "nginx.conf"),
+		CertsDir:   filepath.Join(baseDir, "letsencrypt"),
+		WebrootDir: filepath.Join(baseDir, "www"),
+		StaticDir:  filepath.Join(baseDir, "static"),
+		LogsDir:    filepath.Join(baseDir, "logs"),
+		PIDFile:    filepath.Join(baseDir, "run", "nginx.pid"),
+	}
+	if len(opts) > 0 {
+		override := opts[0]
+		if strings.TrimSpace(override.NginxConf) != "" {
+			cfg.NginxConf = strings.TrimSpace(override.NginxConf)
+		}
+		cfg.NginxBin = strings.TrimSpace(override.NginxBin)
+		if strings.TrimSpace(override.CertsDir) != "" {
+			cfg.CertsDir = strings.TrimSpace(override.CertsDir)
+		}
+		if strings.TrimSpace(override.WebrootDir) != "" {
+			cfg.WebrootDir = strings.TrimSpace(override.WebrootDir)
+		}
+		if strings.TrimSpace(override.StaticDir) != "" {
+			cfg.StaticDir = strings.TrimSpace(override.StaticDir)
+		}
+		if strings.TrimSpace(override.LogsDir) != "" {
+			cfg.LogsDir = strings.TrimSpace(override.LogsDir)
+		}
+		if strings.TrimSpace(override.PIDFile) != "" {
+			cfg.PIDFile = strings.TrimSpace(override.PIDFile)
+		}
+	}
+
 	return &Manager{
 		SitesDir:     filepath.Join(baseDir, "sites"),
 		StreamsDir:   filepath.Join(baseDir, "streams"),
 		StagingDir:   filepath.Join(baseDir, "staging"),
 		TemplatesDir: filepath.Join(baseDir, "templates"),
-		NginxConf:    "/etc/nginx/nginx.conf",
+		NginxConf:    cfg.NginxConf,
+		NginxBin:     cfg.NginxBin,
 		FallbackCert: filepath.Join(baseDir, "default-certs", "fallback.crt"),
 		FallbackKey:  filepath.Join(baseDir, "default-certs", "fallback.key"),
+		CertsDir:     cfg.CertsDir,
+		WebrootDir:   cfg.WebrootDir,
+		StaticDir:    cfg.StaticDir,
+		LogsDir:      cfg.LogsDir,
+		PIDFile:      cfg.PIDFile,
 	}
 }
 
@@ -43,6 +110,10 @@ func (m *Manager) EnsureDirs() error {
 		m.StagingDir,
 		m.TemplatesDir,
 		filepath.Dir(m.FallbackCert),
+		m.WebrootDir,
+		m.StaticDir,
+		m.LogsDir,
+		filepath.Dir(m.PIDFile),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0755); err != nil {
@@ -58,7 +129,7 @@ func fileExists(path string) bool {
 }
 
 func (m *Manager) realCertPaths(domain string) (string, string) {
-	base := filepath.Join("/etc/letsencrypt/live", domain)
+	base := filepath.Join(m.CertsDir, "live", domain)
 	return filepath.Join(base, "fullchain.pem"), filepath.Join(base, "privkey.pem")
 }
 
@@ -101,6 +172,9 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 		SSLKey            string
 		EffectiveForceSSL bool
 		UsingFallbackCert bool
+		LogsDir           string
+		WebrootDir        string
+		StaticDir         string
 	}{
 		Site:              site,
 		TemplateSnippets:  templateContent.String(),
@@ -108,6 +182,9 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 		SSLKey:            keyPath,
 		EffectiveForceSSL: effectiveForceSSL,
 		UsingFallbackCert: usingFallbackCert,
+		LogsDir:           m.LogsDir,
+		WebrootDir:        m.WebrootDir,
+		StaticDir:         m.StaticDir,
 	}
 
 	// Basic server block template
@@ -125,8 +202,8 @@ server {
     listen 80;
     server_name {{ .Domain }};
 
-    access_log /var/log/hubfly/{{ .ID }}.access.log hubfly;
-    error_log /var/log/hubfly/{{ .ID }}.error.log notice;
+    access_log {{ .LogsDir }}/{{ .ID }}.access.log hubfly;
+    error_log {{ .LogsDir }}/{{ .ID }}.error.log notice;
 
     {{ if .Firewall }}
     {{ if .Firewall.BlockRules }}
@@ -215,19 +292,19 @@ server {
 
     # Challenge path for Certbot
     location /.well-known/acme-challenge/ {
-        root /var/www/hubfly;
+        root {{ .WebrootDir }};
         try_files $uri =404;
     }
 
     error_page 403 /403.html;
     location = /403.html {
-        root /var/www/hubfly/static;
+        root {{ .StaticDir }};
         internal;
     }
 
     error_page 502 504 /502.html;
     location = /502.html {
-        root /var/www/hubfly/static;
+        root {{ .StaticDir }};
         internal;
     }
 }
@@ -318,13 +395,13 @@ server {
 
     error_page 403 /403.html;
     location = /403.html {
-        root /var/www/hubfly/static;
+        root {{ .StaticDir }};
         internal;
     }
 
     error_page 502 504 /502.html;
     location = /502.html {
-        root /var/www/hubfly/static;
+        root {{ .StaticDir }};
         internal;
     }
 }
@@ -479,7 +556,7 @@ func (m *Manager) Validate(stagingFile string) error {
 }
 
 func (m *Manager) runConfigTest() error {
-	path, err := exec.LookPath("nginx")
+	path, err := m.resolveBinary()
 	if err != nil {
 		slog.Warn("Nginx not found, skipping config test")
 		return nil
@@ -543,7 +620,7 @@ func (m *Manager) Apply(siteID, stagingFile string) error {
 }
 
 func (m *Manager) Reload() error {
-	path, err := exec.LookPath("nginx")
+	path, err := m.resolveBinary()
 	if err != nil {
 		slog.Warn("Nginx not found, skipping reload")
 		return nil // Skip if no nginx
@@ -552,11 +629,160 @@ func (m *Manager) Reload() error {
 	cmd := exec.Command(path, "-s", "reload")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		slog.Error("Nginx reload failed", "error", err, "output", string(out))
-		return fmt.Errorf("nginx reload failed: %s, output: %s", err, string(out))
+		slog.Warn("Nginx reload failed, attempting restart", "error", err, "output", string(out))
+		if startErr := m.EnsureRunning(); startErr != nil {
+			slog.Error("Nginx restart failed after reload failure", "reload_error", err, "start_error", startErr)
+			return fmt.Errorf("nginx reload failed: %s, output: %s", err, string(out))
+		}
+		return nil
 	}
 	slog.Debug("Nginx reload success", "output", string(out))
+	if err := m.EnsureRunning(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (m *Manager) resolveBinary() (string, error) {
+	if m.NginxBin != "" {
+		if _, err := os.Stat(m.NginxBin); err != nil {
+			return "", fmt.Errorf("nginx binary not found at %s", m.NginxBin)
+		}
+		return m.NginxBin, nil
+	}
+	return exec.LookPath("nginx")
+}
+
+func (m *Manager) Version() (string, error) {
+	path, err := m.resolveBinary()
+	if err != nil {
+		return "", err
+	}
+
+	cmd := exec.Command(path, "-v")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to get nginx version: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (m *Manager) pid() (int, error) {
+	pidBytes, err := os.ReadFile(m.PIDFile)
+	if err != nil {
+		return 0, err
+	}
+
+	pidStr := strings.TrimSpace(string(pidBytes))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid pid in %s: %w", m.PIDFile, err)
+	}
+	return pid, nil
+}
+
+func (m *Manager) IsRunning() (bool, int, error) {
+	pid, err := m.pid()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, 0, nil
+		}
+		return false, 0, err
+	}
+
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false, pid, err
+	}
+	if err := process.Signal(syscall.Signal(0)); err != nil {
+		return false, pid, nil
+	}
+
+	return true, pid, nil
+}
+
+func (m *Manager) EnsureRunning() error {
+	running, _, err := m.IsRunning()
+	if err != nil {
+		return err
+	}
+	if running {
+		return nil
+	}
+
+	path, err := m.resolveBinary()
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(m.PIDFile), 0755); err != nil {
+		return err
+	}
+
+	args := []string{"-c", m.NginxConf, "-g", fmt.Sprintf("pid %s;", m.PIDFile)}
+	cmd := exec.Command(path, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("nginx start failed: %s, output: %s", err, string(out))
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+		runningNow, _, runErr := m.IsRunning()
+		if runErr == nil && runningNow {
+			return nil
+		}
+	}
+	return fmt.Errorf("nginx did not become running after start")
+}
+
+func (m *Manager) Restart() error {
+	path, err := m.resolveBinary()
+	if err != nil {
+		return err
+	}
+
+	cmd := exec.Command(path, "-s", "quit")
+	_, _ = cmd.CombinedOutput()
+
+	time.Sleep(500 * time.Millisecond)
+	return m.EnsureRunning()
+}
+
+func (m *Manager) Health() Health {
+	h := Health{
+		Config:  m.NginxConf,
+		PIDFile: m.PIDFile,
+	}
+
+	path, err := m.resolveBinary()
+	if err != nil {
+		h.Error = err.Error()
+		return h
+	}
+	h.Binary = path
+	h.Available = true
+
+	version, versionErr := m.Version()
+	if versionErr == nil {
+		h.Version = version
+	} else {
+		h.Error = versionErr.Error()
+	}
+
+	running, pid, runErr := m.IsRunning()
+	h.Running = running
+	h.PID = pid
+	if runErr != nil {
+		if h.Error == "" {
+			h.Error = runErr.Error()
+		} else {
+			h.Error = h.Error + "; " + runErr.Error()
+		}
+	}
+
+	return h
 }
 
 func (m *Manager) Delete(siteID string) error {

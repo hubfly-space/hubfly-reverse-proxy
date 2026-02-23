@@ -7,8 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
-	"net"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +19,7 @@ import (
 	"github.com/hubfly/hubfly-reverse-proxy/internal/models"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/nginx"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/store"
+	"github.com/hubfly/hubfly-reverse-proxy/internal/upstream"
 )
 
 var certRetrySchedule = []time.Duration{
@@ -33,21 +34,36 @@ var certRetrySchedule = []time.Duration{
 const certRetrySweepInterval = 30 * time.Second
 
 type Server struct {
-	Store      store.Store
-	Nginx      *nginx.Manager
-	Certbot    *certbot.Manager
-	LogManager *logmanager.Manager
-	retryMu    sync.Mutex
-	retrying   map[string]bool
+	Store            store.Store
+	Nginx            *nginx.Manager
+	Certbot          *certbot.Manager
+	LogManager       *logmanager.Manager
+	UpstreamResolver upstream.Resolver
+	BuildInfo        BuildInfo
+	startedAt        time.Time
+	retryMu          sync.Mutex
+	retrying         map[string]bool
 }
 
-func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, l *logmanager.Manager) *Server {
+type BuildInfo struct {
+	Version   string
+	Commit    string
+	BuildTime string
+}
+
+func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, l *logmanager.Manager, resolver upstream.Resolver, buildInfo BuildInfo) *Server {
+	if resolver == nil {
+		resolver = upstream.NewDefaultResolver()
+	}
 	srv := &Server{
-		Store:      s,
-		Nginx:      n,
-		Certbot:    c,
-		LogManager: l,
-		retrying:   make(map[string]bool),
+		Store:            s,
+		Nginx:            n,
+		Certbot:          c,
+		LogManager:       l,
+		UpstreamResolver: resolver,
+		BuildInfo:        buildInfo,
+		startedAt:        time.Now(),
+		retrying:         make(map[string]bool),
 	}
 	go srv.certRetryLoop()
 	return srv
@@ -56,11 +72,11 @@ func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, l *logmanage
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", s.handleHealth)
-	mux.HandleFunc("/v1/sites", s.handleSites)       // GET, POST
-	mux.HandleFunc("/v1/sites/", s.handleSiteDetail) // GET, DELETE, PATCH
+	mux.HandleFunc("/v1/sites", s.handleSites)           // GET, POST
+	mux.HandleFunc("/v1/sites/", s.handleSiteDetail)     // GET, DELETE, PATCH
 	mux.HandleFunc("/v1/streams", s.handleStreams)       // GET, POST
 	mux.HandleFunc("/v1/streams/", s.handleStreamDetail) // GET, DELETE
-	
+
 	return s.loggingMiddleware(mux)
 }
 
@@ -107,7 +123,34 @@ func (rw *responseWriter) WriteHeader(code int) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	jsonResponse(w, 200, map[string]string{"status": "ok"})
+	sites, _ := s.Store.ListSites()
+	streams, _ := s.Store.ListStreams()
+
+	nginxHealth := s.Nginx.Health()
+	certbotHealth := s.Certbot.Health()
+	status := "ok"
+	if !nginxHealth.Available || !nginxHealth.Running || !certbotHealth.Available {
+		status = "degraded"
+	}
+
+	jsonResponse(w, 200, map[string]interface{}{
+		"status": status,
+		"time":   time.Now().UTC().Format(time.RFC3339),
+		"service": map[string]interface{}{
+			"version":    s.BuildInfo.Version,
+			"commit":     s.BuildInfo.Commit,
+			"build_time": s.BuildInfo.BuildTime,
+			"go_version": runtime.Version(),
+			"started_at": s.startedAt.UTC().Format(time.RFC3339),
+			"uptime":     time.Since(s.startedAt).String(),
+		},
+		"nginx":   nginxHealth,
+		"certbot": certbotHealth,
+		"store": map[string]interface{}{
+			"sites_count":   len(sites),
+			"streams_count": len(streams),
+		},
+	})
 }
 
 type createStreamRequest struct {
@@ -119,27 +162,50 @@ type createStreamRequest struct {
 	Domain        string `json:"domain,omitempty"`
 }
 
-func normalizeStreamUpstream(upstream string, containerPort int) (string, error) {
-	upstream = strings.TrimSpace(upstream)
-	if upstream == "" {
-		return "", fmt.Errorf("upstream is required")
+func normalizeStreamUpstream(resolver upstream.Resolver, upstreamAddress string, containerPort int) (string, error) {
+	return resolver.Resolve(upstreamAddress, containerPort)
+}
+
+func (s *Server) normalizeSiteUpstreams(upstreamsInput []string) ([]string, error) {
+	if len(upstreamsInput) == 0 {
+		return nil, fmt.Errorf("at least one upstream is required")
 	}
 
-	if containerPort == 0 {
-		return upstream, nil
+	normalized := make([]string, 0, len(upstreamsInput))
+	for _, upstreamAddress := range upstreamsInput {
+		resolved, err := s.UpstreamResolver.Resolve(upstreamAddress, 0)
+		if err != nil {
+			return nil, err
+		}
+		normalized = append(normalized, resolved)
 	}
-	if containerPort < 1 || containerPort > 65535 {
-		return "", fmt.Errorf("container_port must be between 1 and 65535")
-	}
+	return normalized, nil
+}
 
-	host := upstream
-	if splitHost, _, err := net.SplitHostPort(upstream); err == nil {
-		host = splitHost
-	} else if strings.HasPrefix(upstream, "[") && strings.HasSuffix(upstream, "]") {
-		host = strings.TrimSuffix(strings.TrimPrefix(upstream, "["), "]")
+func (s *Server) ensureResolvedSiteUpstreams(site *models.Site) error {
+	original := append([]string(nil), site.Upstreams...)
+	normalized, err := s.normalizeSiteUpstreams(site.Upstreams)
+	if err != nil {
+		return err
 	}
+	site.Upstreams = normalized
 
-	return net.JoinHostPort(host, strconv.Itoa(containerPort)), nil
+	changed := len(original) != len(normalized)
+	if !changed {
+		for idx := range original {
+			if original[idx] != normalized[idx] {
+				changed = true
+				break
+			}
+		}
+	}
+	if changed {
+		site.UpdatedAt = time.Now()
+		if err := s.Store.SaveSite(site); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
@@ -158,7 +224,7 @@ func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		upstream, err := normalizeStreamUpstream(req.Upstream, req.ContainerPort)
+		upstreamAddress, err := normalizeStreamUpstream(s.UpstreamResolver, req.Upstream, req.ContainerPort)
 		if err != nil {
 			errorResponse(w, 400, err.Error())
 			return
@@ -167,7 +233,7 @@ func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 		stream := models.Stream{
 			ID:         strings.TrimSpace(req.ID),
 			ListenPort: req.ListenPort,
-			Upstream:   upstream,
+			Upstream:   upstreamAddress,
 			Protocol:   strings.ToLower(strings.TrimSpace(req.Protocol)),
 			Domain:     strings.TrimSpace(req.Domain),
 		}
@@ -277,6 +343,18 @@ func (s *Server) reconcileStreams(port int) {
 	var portStreams []models.Stream
 	for _, str := range allStreams {
 		if str.ListenPort == port {
+			resolved, resolveErr := s.UpstreamResolver.Resolve(str.Upstream, 0)
+			if resolveErr != nil {
+				s.updateStreamStatus(str.ID, "error", "failed to resolve upstream: "+resolveErr.Error())
+				continue
+			}
+			if str.Upstream != resolved {
+				str.Upstream = resolved
+				str.UpdatedAt = time.Now()
+				if saveErr := s.Store.SaveStream(&str); saveErr != nil {
+					slog.Warn("failed to persist resolved stream upstream", "id", str.ID, "error", saveErr)
+				}
+			}
 			portStreams = append(portStreams, str)
 		}
 	}
@@ -508,6 +586,12 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, 400, "invalid json")
 			return
 		}
+		normalizedUpstreams, err := s.normalizeSiteUpstreams(site.Upstreams)
+		if err != nil {
+			errorResponse(w, 400, err.Error())
+			return
+		}
+		site.Upstreams = normalizedUpstreams
 		if site.ID == "" {
 			site.ID = site.Domain // Simple ID generation
 		}
@@ -598,12 +682,12 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		// Decode partial update
 		var input struct {
-			Domain          *string           `json:"domain"`
-			Upstreams       []string          `json:"upstreams"`
-			ForceSSL        *bool             `json:"force_ssl"`
-			SSL             *bool             `json:"ssl"`
-			ExtraConfig     *string           `json:"extra_config"`
-			ProxySetHeaders map[string]string `json:"proxy_set_header"`
+			Domain          *string                `json:"domain"`
+			Upstreams       []string               `json:"upstreams"`
+			ForceSSL        *bool                  `json:"force_ssl"`
+			SSL             *bool                  `json:"ssl"`
+			ExtraConfig     *string                `json:"extra_config"`
+			ProxySetHeaders map[string]string      `json:"proxy_set_header"`
 			Firewall        *models.FirewallConfig `json:"firewall"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -639,7 +723,12 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 
 		// Apply other updates
 		if input.Upstreams != nil {
-			site.Upstreams = input.Upstreams
+			normalizedUpstreams, resolveErr := s.normalizeSiteUpstreams(input.Upstreams)
+			if resolveErr != nil {
+				errorResponse(w, 400, resolveErr.Error())
+				return
+			}
+			site.Upstreams = normalizedUpstreams
 		}
 		if input.ForceSSL != nil {
 			site.ForceSSL = *input.ForceSSL
@@ -684,6 +773,10 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) refreshSiteConfig(site *models.Site) {
 	slog.Info("Refreshing site config", "site_id", site.ID, "domain", site.Domain)
+	if err := s.ensureResolvedSiteUpstreams(site); err != nil {
+		s.updateStatus(site.ID, "error", "failed to resolve upstream(s): "+err.Error())
+		return
+	}
 	preserveMessage := ""
 	if currentSite, err := s.Store.GetSite(site.ID); err == nil {
 		if currentSite.CertIssueStatus == "retrying" || currentSite.CertIssueStatus == "failed" {
@@ -722,6 +815,10 @@ func (s *Server) refreshSiteConfig(site *models.Site) {
 
 func (s *Server) provisionSite(site *models.Site) {
 	slog.Info("Provisioning site", "site_id", site.ID, "domain", site.Domain, "ssl_requested", site.SSL)
+	if err := s.ensureResolvedSiteUpstreams(site); err != nil {
+		s.updateStatus(site.ID, "error", "failed to resolve upstream(s): "+err.Error())
+		return
+	}
 
 	// 1. Generate Nginx Config (HTTP)
 	// 2. Test & Reload

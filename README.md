@@ -2,6 +2,46 @@
 
 A lightweight, single container reverse proxy appliance wrapping NGINX and Certbot with a Go based REST API. It provides safe, atomic configuration management and automated SSL certificate handling.
 
+## Host Runtime Mode (No Docker Engine Required)
+
+Hubfly can now run as a host controller for external `nginx` and `certbot`, with project-local runtime paths by default.
+
+- Default runtime root: `.runtime/`
+- Default config store: `.runtime/config`
+- Default generated nginx config: `.runtime/nginx/nginx.conf`
+- Default cert storage root: `.runtime/letsencrypt`
+- Default webroot: `.runtime/www`
+- Default logs dir: `.runtime/logs`
+
+Run directly:
+
+```bash
+go run ./cmd/hubfly --port 81
+```
+
+Useful overrides:
+
+```bash
+go run ./cmd/hubfly \
+  --runtime-dir .runtime \
+  --nginx-bin /usr/sbin/nginx \
+  --certbot-bin /usr/bin/certbot \
+  --nginx-conf .runtime/nginx/nginx.conf
+```
+
+Notes:
+- If `.runtime/nginx/nginx.conf` is missing, Hubfly writes a default one.
+- If `--nginx-bin` / `--certbot-bin` are not set, Hubfly falls back to `$PATH`.
+- NGINX is actively managed: reload tries are followed by automatic start/recovery when needed.
+
+## Versioning
+
+Build metadata is injected at build time and reported by `GET /v1/health`.
+
+```bash
+go build -ldflags "-X main.appVersion=v1.0.0 -X main.gitCommit=$(git rev-parse --short HEAD) -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o hubfly ./cmd/hubfly
+```
+
 ## How to Run
 
 The easiest way to run Hubfly is using Docker Compose. This sets up the API, NGINX, and necessary volumes.
@@ -83,6 +123,12 @@ Verify the service is running.
 ```bash
 curl -i http://localhost:81/v1/health
 ```
+
+Health now includes:
+- service version/commit/build time/go version/uptime
+- nginx availability, running state, binary, config, pid, version
+- certbot availability, binary, version, cert root, webroot
+- store counts (sites/streams)
 
 ### 2. Create a Simple Site (HTTP)
 Forward traffic from `example.local` to a local upstream (e.g., a container IP or external site).

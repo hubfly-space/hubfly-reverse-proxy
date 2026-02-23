@@ -5,9 +5,11 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/hubfly/hubfly-reverse-proxy/internal/api"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/certbot"
+	"github.com/hubfly/hubfly-reverse-proxy/internal/containeripmap"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/dockerengine"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/logmanager"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/nginx"
@@ -76,10 +78,15 @@ func main() {
 
 	cm := certbot.NewManager(*webrootDir, "cert-support@hubfly.app", *certbotBin, *certsDir)
 	dockerClient := dockerengine.NewClient(*dockerSock)
+	containerIPStore, err := containeripmap.NewStore(filepath.Join(*configDir, "container-ips.json"))
+	if err != nil {
+		slog.Error("Failed to initialize container ip store", "error", err)
+		os.Exit(1)
+	}
 	resolver := upstream.NewDefaultResolver(dockerClient)
 	lm := logmanager.NewManager(*logsDir)
 
-	srv := api.NewServer(st, nm, cm, dockerClient, lm, resolver, api.BuildInfo{
+	srv := api.NewServer(st, nm, cm, dockerClient, containerIPStore, lm, resolver, api.BuildInfo{
 		Version:   appVersion,
 		Commit:    gitCommit,
 		BuildTime: buildTime,

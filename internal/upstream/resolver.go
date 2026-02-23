@@ -22,12 +22,7 @@ func NewDefaultResolver(dockerClient *dockerengine.Client) *DefaultResolver {
 }
 
 func (r *DefaultResolver) Resolve(upstream string, overridePort int) (string, error) {
-	upstream = strings.TrimSpace(upstream)
-	if upstream == "" {
-		return "", fmt.Errorf("upstream is required")
-	}
-
-	host, port, err := splitHostAndPort(upstream)
+	host, port, err := ParseEndpoint(upstream)
 	if err != nil {
 		return "", err
 	}
@@ -41,7 +36,6 @@ func (r *DefaultResolver) Resolve(upstream string, overridePort int) (string, er
 	if port < 1 || port > 65535 {
 		return "", fmt.Errorf("upstream must include a valid port")
 	}
-
 	resolvedHost, err := r.resolveHost(host)
 	if err != nil {
 		return "", err
@@ -50,7 +44,12 @@ func (r *DefaultResolver) Resolve(upstream string, overridePort int) (string, er
 	return net.JoinHostPort(resolvedHost, strconv.Itoa(port)), nil
 }
 
-func splitHostAndPort(upstream string) (string, int, error) {
+func ParseEndpoint(upstream string) (string, int, error) {
+	upstream = strings.TrimSpace(upstream)
+	if upstream == "" {
+		return "", 0, fmt.Errorf("upstream is required")
+	}
+
 	if host, portStr, err := net.SplitHostPort(upstream); err == nil {
 		port, convErr := strconv.Atoi(portStr)
 		if convErr != nil {
@@ -76,6 +75,29 @@ func splitHostAndPort(upstream string) (string, int, error) {
 		return "", 0, fmt.Errorf("upstream must include a valid port")
 	}
 	return host, port, nil
+}
+
+func NormalizeEndpoint(upstream string, overridePort int) (string, error) {
+	host, port, err := ParseEndpoint(upstream)
+	if err != nil {
+		return "", err
+	}
+
+	if overridePort != 0 {
+		if overridePort < 1 || overridePort > 65535 {
+			return "", fmt.Errorf("container_port must be between 1 and 65535")
+		}
+		port = overridePort
+	}
+	if port < 1 || port > 65535 {
+		return "", fmt.Errorf("upstream must include a valid port")
+	}
+
+	return net.JoinHostPort(host, strconv.Itoa(port)), nil
+}
+
+func IsIPHost(host string) bool {
+	return net.ParseIP(host) != nil
 }
 
 func (r *DefaultResolver) resolveHost(host string) (string, error) {

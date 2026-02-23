@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hubfly/hubfly-reverse-proxy/internal/certbot"
+	"github.com/hubfly/hubfly-reverse-proxy/internal/containeripmap"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/dockerengine"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/logmanager"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/models"
@@ -33,12 +34,14 @@ var certRetrySchedule = []time.Duration{
 }
 
 const certRetrySweepInterval = 30 * time.Second
+const upstreamSyncInterval = 2 * time.Second
 
 type Server struct {
 	Store            store.Store
 	Nginx            *nginx.Manager
 	Certbot          *certbot.Manager
 	Docker           *dockerengine.Client
+	ContainerIPs     *containeripmap.Store
 	LogManager       *logmanager.Manager
 	UpstreamResolver upstream.Resolver
 	BuildInfo        BuildInfo
@@ -53,7 +56,7 @@ type BuildInfo struct {
 	BuildTime string
 }
 
-func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockerengine.Client, l *logmanager.Manager, resolver upstream.Resolver, buildInfo BuildInfo) *Server {
+func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockerengine.Client, ipStore *containeripmap.Store, l *logmanager.Manager, resolver upstream.Resolver, buildInfo BuildInfo) *Server {
 	if resolver == nil {
 		resolver = upstream.NewDefaultResolver(d)
 	}
@@ -62,6 +65,7 @@ func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockereng
 		Nginx:            n,
 		Certbot:          c,
 		Docker:           d,
+		ContainerIPs:     ipStore,
 		LogManager:       l,
 		UpstreamResolver: resolver,
 		BuildInfo:        buildInfo,
@@ -69,6 +73,7 @@ func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockereng
 		retrying:         make(map[string]bool),
 	}
 	go srv.certRetryLoop()
+	go srv.upstreamSyncLoop()
 	return srv
 }
 
@@ -139,6 +144,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if !nginxHealth.Available || !nginxHealth.Running || !certbotHealth.Available || !dockerHealth.Available {
 		status = "degraded"
 	}
+	containerIPCache := map[string]interface{}{"count": 0}
+	if s.ContainerIPs != nil {
+		containerIPCache["count"] = s.ContainerIPs.Count()
+		containerIPCache["path"] = s.ContainerIPs.Path()
+	}
 
 	jsonResponse(w, 200, map[string]interface{}{
 		"status": status,
@@ -151,9 +161,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			"started_at": s.startedAt.UTC().Format(time.RFC3339),
 			"uptime":     time.Since(s.startedAt).String(),
 		},
-		"nginx":   nginxHealth,
-		"certbot": certbotHealth,
-		"docker":  dockerHealth,
+		"nginx":              nginxHealth,
+		"certbot":            certbotHealth,
+		"docker":             dockerHealth,
+		"container_ip_cache": containerIPCache,
 		"store": map[string]interface{}{
 			"sites_count":   len(sites),
 			"streams_count": len(streams),
@@ -170,8 +181,8 @@ type createStreamRequest struct {
 	Domain        string `json:"domain,omitempty"`
 }
 
-func normalizeStreamUpstream(resolver upstream.Resolver, upstreamAddress string, containerPort int) (string, error) {
-	return resolver.Resolve(upstreamAddress, containerPort)
+func normalizeStreamUpstream(upstreamAddress string, containerPort int) (string, error) {
+	return upstream.NormalizeEndpoint(upstreamAddress, containerPort)
 }
 
 func (s *Server) normalizeSiteUpstreams(upstreamsInput []string) ([]string, error) {
@@ -181,39 +192,48 @@ func (s *Server) normalizeSiteUpstreams(upstreamsInput []string) ([]string, erro
 
 	normalized := make([]string, 0, len(upstreamsInput))
 	for _, upstreamAddress := range upstreamsInput {
-		resolved, err := s.UpstreamResolver.Resolve(upstreamAddress, 0)
+		normalizedUpstream, err := upstream.NormalizeEndpoint(upstreamAddress, 0)
 		if err != nil {
 			return nil, err
 		}
-		normalized = append(normalized, resolved)
+		normalized = append(normalized, normalizedUpstream)
 	}
 	return normalized, nil
 }
 
-func (s *Server) ensureResolvedSiteUpstreams(site *models.Site) error {
-	original := append([]string(nil), site.Upstreams...)
-	normalized, err := s.normalizeSiteUpstreams(site.Upstreams)
+func (s *Server) resolveEndpointAndTrack(raw string, overridePort int) (string, error) {
+	host, _, err := upstream.ParseEndpoint(raw)
 	if err != nil {
-		return err
+		return "", err
 	}
-	site.Upstreams = normalized
 
-	changed := len(original) != len(normalized)
-	if !changed {
-		for idx := range original {
-			if original[idx] != normalized[idx] {
-				changed = true
-				break
+	resolved, err := s.UpstreamResolver.Resolve(raw, overridePort)
+	if err != nil {
+		return "", err
+	}
+
+	if !upstream.IsIPHost(host) && s.ContainerIPs != nil {
+		resolvedHost, _, parseErr := upstream.ParseEndpoint(resolved)
+		if parseErr == nil && upstream.IsIPHost(resolvedHost) {
+			if _, saveErr := s.ContainerIPs.Set(host, resolvedHost); saveErr != nil {
+				slog.Warn("failed to persist container ip mapping", "container", host, "error", saveErr)
 			}
 		}
 	}
-	if changed {
-		site.UpdatedAt = time.Now()
-		if err := s.Store.SaveSite(site); err != nil {
-			return err
+
+	return resolved, nil
+}
+
+func (s *Server) resolveSiteUpstreamsForRuntime(site *models.Site) ([]string, error) {
+	resolved := make([]string, 0, len(site.Upstreams))
+	for _, upstreamAddress := range site.Upstreams {
+		ipEndpoint, err := s.resolveEndpointAndTrack(upstreamAddress, 0)
+		if err != nil {
+			return nil, err
 		}
+		resolved = append(resolved, ipEndpoint)
 	}
-	return nil
+	return resolved, nil
 }
 
 func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +252,7 @@ func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		upstreamAddress, err := normalizeStreamUpstream(s.UpstreamResolver, req.Upstream, req.ContainerPort)
+		upstreamAddress, err := normalizeStreamUpstream(req.Upstream, req.ContainerPort)
 		if err != nil {
 			errorResponse(w, 400, err.Error())
 			return
@@ -351,19 +371,14 @@ func (s *Server) reconcileStreams(port int) {
 	var portStreams []models.Stream
 	for _, str := range allStreams {
 		if str.ListenPort == port {
-			resolved, resolveErr := s.UpstreamResolver.Resolve(str.Upstream, 0)
+			resolved, resolveErr := s.resolveEndpointAndTrack(str.Upstream, 0)
 			if resolveErr != nil {
 				s.updateStreamStatus(str.ID, "error", "failed to resolve upstream: "+resolveErr.Error())
 				continue
 			}
-			if str.Upstream != resolved {
-				str.Upstream = resolved
-				str.UpdatedAt = time.Now()
-				if saveErr := s.Store.SaveStream(&str); saveErr != nil {
-					slog.Warn("failed to persist resolved stream upstream", "id", str.ID, "error", saveErr)
-				}
-			}
-			portStreams = append(portStreams, str)
+			resolvedStream := str
+			resolvedStream.Upstream = resolved
+			portStreams = append(portStreams, resolvedStream)
 		}
 	}
 	slog.Debug("Found streams for port", "port", port, "count", len(portStreams))
@@ -388,6 +403,123 @@ func (s *Server) reconcileStreams(port int) {
 func (s *Server) provisionStream(stream *models.Stream) {
 	// Deprecated: use reconcileStreams
 	s.reconcileStreams(stream.ListenPort)
+}
+
+func (s *Server) upstreamSyncLoop() {
+	if s.Docker == nil || s.ContainerIPs == nil {
+		return
+	}
+
+	ticker := time.NewTicker(upstreamSyncInterval)
+	defer ticker.Stop()
+
+	s.syncContainerIPsAndRefresh()
+	for range ticker.C {
+		s.syncContainerIPsAndRefresh()
+	}
+}
+
+func (s *Server) syncContainerIPsAndRefresh() {
+	names, affectedSiteIDs, affectedPorts, err := s.collectTrackedContainerRefs()
+	if err != nil {
+		slog.Debug("container ip sync skipped", "error", err)
+		return
+	}
+	if len(names) == 0 {
+		return
+	}
+
+	changedNames := make(map[string]bool)
+	for name := range names {
+		ip, err := s.Docker.ResolveContainerIP(name)
+		if err != nil {
+			continue
+		}
+		changed, err := s.ContainerIPs.Set(name, ip)
+		if err != nil {
+			slog.Warn("failed saving container ip mapping", "name", name, "error", err)
+			continue
+		}
+		if changed {
+			changedNames[name] = true
+		}
+	}
+	if len(changedNames) == 0 {
+		return
+	}
+
+	siteIDsToRefresh := make(map[string]bool)
+	portsToRefresh := make(map[int]bool)
+	for name := range changedNames {
+		for siteID := range affectedSiteIDs[name] {
+			siteIDsToRefresh[siteID] = true
+		}
+		for port := range affectedPorts[name] {
+			portsToRefresh[port] = true
+		}
+	}
+
+	for siteID := range siteIDsToRefresh {
+		site, err := s.Store.GetSite(siteID)
+		if err != nil {
+			continue
+		}
+		siteCopy := *site
+		go s.refreshSiteConfig(&siteCopy)
+	}
+	for port := range portsToRefresh {
+		go s.reconcileStreams(port)
+	}
+
+	slog.Info(
+		"container ip changes applied",
+		"changed_containers", len(changedNames),
+		"affected_sites", len(siteIDsToRefresh),
+		"affected_stream_ports", len(portsToRefresh),
+	)
+}
+
+func (s *Server) collectTrackedContainerRefs() (map[string]bool, map[string]map[string]bool, map[string]map[int]bool, error) {
+	sites, err := s.Store.ListSites()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	streams, err := s.Store.ListStreams()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	names := make(map[string]bool)
+	siteRefs := make(map[string]map[string]bool)
+	streamRefs := make(map[string]map[int]bool)
+
+	for _, site := range sites {
+		for _, endpoint := range site.Upstreams {
+			host, _, parseErr := upstream.ParseEndpoint(endpoint)
+			if parseErr != nil || upstream.IsIPHost(host) {
+				continue
+			}
+			names[host] = true
+			if siteRefs[host] == nil {
+				siteRefs[host] = make(map[string]bool)
+			}
+			siteRefs[host][site.ID] = true
+		}
+	}
+
+	for _, stream := range streams {
+		host, _, parseErr := upstream.ParseEndpoint(stream.Upstream)
+		if parseErr != nil || upstream.IsIPHost(host) {
+			continue
+		}
+		names[host] = true
+		if streamRefs[host] == nil {
+			streamRefs[host] = make(map[int]bool)
+		}
+		streamRefs[host][stream.ListenPort] = true
+	}
+
+	return names, siteRefs, streamRefs, nil
 }
 
 func (s *Server) updateStreamStatus(id, status, msg string) {
@@ -781,10 +913,13 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) refreshSiteConfig(site *models.Site) {
 	slog.Info("Refreshing site config", "site_id", site.ID, "domain", site.Domain)
-	if err := s.ensureResolvedSiteUpstreams(site); err != nil {
+	resolvedUpstreams, err := s.resolveSiteUpstreamsForRuntime(site)
+	if err != nil {
 		s.updateStatus(site.ID, "error", "failed to resolve upstream(s): "+err.Error())
 		return
 	}
+	runtimeSite := *site
+	runtimeSite.Upstreams = resolvedUpstreams
 	preserveMessage := ""
 	if currentSite, err := s.Store.GetSite(site.ID); err == nil {
 		if currentSite.CertIssueStatus == "retrying" || currentSite.CertIssueStatus == "failed" {
@@ -798,7 +933,7 @@ func (s *Server) refreshSiteConfig(site *models.Site) {
 	}
 	s.updateStatus(site.ID, "provisioning", provisioningMessage)
 
-	config, err := s.Nginx.GenerateConfig(site)
+	config, err := s.Nginx.GenerateConfig(&runtimeSite)
 	if err != nil {
 		slog.Error("Config generation failed", "site_id", site.ID, "error", err)
 		s.updateStatus(site.ID, "error", "config gen failed: "+err.Error())
@@ -823,10 +958,13 @@ func (s *Server) refreshSiteConfig(site *models.Site) {
 
 func (s *Server) provisionSite(site *models.Site) {
 	slog.Info("Provisioning site", "site_id", site.ID, "domain", site.Domain, "ssl_requested", site.SSL)
-	if err := s.ensureResolvedSiteUpstreams(site); err != nil {
+	resolvedUpstreams, err := s.resolveSiteUpstreamsForRuntime(site)
+	if err != nil {
 		s.updateStatus(site.ID, "error", "failed to resolve upstream(s): "+err.Error())
 		return
 	}
+	runtimeSite := *site
+	runtimeSite.Upstreams = resolvedUpstreams
 
 	// 1. Generate Nginx Config (HTTP)
 	// 2. Test & Reload
@@ -841,12 +979,12 @@ func (s *Server) provisionSite(site *models.Site) {
 	// Then we run certbot.
 	// Then we set SSL=true and re-render.
 
-	originalSSL := site.SSL
+	originalSSL := runtimeSite.SSL
 	if originalSSL {
-		site.SSL = false // Temporary disable for challenge
+		runtimeSite.SSL = false // Temporary disable for challenge
 	}
 
-	staging, err := s.Nginx.GenerateConfig(site)
+	staging, err := s.Nginx.GenerateConfig(&runtimeSite)
 	if err != nil {
 		slog.Error("Initial config generation failed", "site_id", site.ID, "error", err)
 		s.updateStatus(site.ID, "error", "config gen failed: "+err.Error())

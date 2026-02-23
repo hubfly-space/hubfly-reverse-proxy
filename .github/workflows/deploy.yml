@@ -45,38 +45,15 @@ jobs:
             docker stop ${{ env.CONTAINER_NAME }} || true
             docker rm ${{ env.CONTAINER_NAME }} || true
 
-            # Create network if it doesn't exist
-            docker network create hubfly-proxy-network || true
-
             # Run the new container
             # Replicating settings from docker-compose.yml
             docker run -d \
               --name ${{ env.CONTAINER_NAME }} \
               --restart unless-stopped \
-              --network hubfly-proxy-network \
-              -p 80:80 \
-              -p 443:443 \
-              -p 81:81 \
-              -p 82:82 \
-              -p 30000-30100:30000-30100 \
+              --network host \
               -v hubfly_proxy_data:/etc/hubfly \
               -v hubfly_proxy_certs:/etc/letsencrypt \
               -v hubfly_proxy_webroot:/var/www/hubfly \
+              -v /var/run/docker.sock:/var/run/docker.sock \
               -e TZ=UTC \
               ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest
-
-            # --- Attach Networks ---
-            PREFIX="proj-network-proj_"
-            echo "--- Re-attaching Project Networks ---"
-            
-            # Find matching networks
-            NETWORKS=$(docker network ls --format '{{.Name}}' | grep "^${PREFIX}")
-            
-            if [ -z "$NETWORKS" ]; then
-                echo "No networks found matching prefix '$PREFIX'."
-            else
-                for NET in $NETWORKS; do
-                    echo "Attaching network: $NET"
-                    docker network connect "$NET" "${{ env.CONTAINER_NAME }}" || echo "  -> Failed or already connected: $NET"
-                done
-            fi

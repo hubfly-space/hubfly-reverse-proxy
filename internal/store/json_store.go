@@ -23,11 +23,12 @@ type Store interface {
 }
 
 type JSONStore struct {
-	sitesFilePath   string
-	streamsFilePath string
-	mu              sync.RWMutex
-	sites           map[string]models.Site
-	streams         map[string]models.Stream
+	sitesFilePath       string
+	legacySitesFilePath string
+	streamsFilePath     string
+	mu                  sync.RWMutex
+	sites               map[string]models.Site
+	streams             map[string]models.Stream
 }
 
 func NewJSONStore(dir string) (*JSONStore, error) {
@@ -35,10 +36,11 @@ func NewJSONStore(dir string) (*JSONStore, error) {
 		return nil, err
 	}
 	s := &JSONStore{
-		sitesFilePath:   filepath.Join(dir, "metadata.json"),
-		streamsFilePath: filepath.Join(dir, "streams.json"),
-		sites:           make(map[string]models.Site),
-		streams:         make(map[string]models.Stream),
+		sitesFilePath:       filepath.Join(dir, "sites.json"),
+		legacySitesFilePath: filepath.Join(dir, "metadata.json"),
+		streamsFilePath:     filepath.Join(dir, "streams.json"),
+		sites:               make(map[string]models.Site),
+		streams:             make(map[string]models.Stream),
 	}
 
 	if err := s.load(); err != nil {
@@ -51,8 +53,15 @@ func (s *JSONStore) load() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	siteFileToLoad := s.sitesFilePath
+	if _, err := os.Stat(siteFileToLoad); os.IsNotExist(err) {
+		if _, legacyErr := os.Stat(s.legacySitesFilePath); legacyErr == nil {
+			siteFileToLoad = s.legacySitesFilePath
+		}
+	}
+
 	// Load Sites
-	if data, err := os.ReadFile(s.sitesFilePath); err == nil && len(data) > 0 {
+	if data, err := os.ReadFile(siteFileToLoad); err == nil && len(data) > 0 {
 		if err := json.Unmarshal(data, &s.sites); err != nil {
 			return fmt.Errorf("failed to load sites: %w", err)
 		}

@@ -7,15 +7,16 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net"
 	"net/http"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hubfly/hubfly-reverse-proxy/internal/certbot"
-	"github.com/hubfly/hubfly-reverse-proxy/internal/containeripmap"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/dockerengine"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/logmanager"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/models"
@@ -37,17 +38,15 @@ const certRetrySweepInterval = 30 * time.Second
 const upstreamSyncInterval = 2 * time.Second
 
 type Server struct {
-	Store            store.Store
-	Nginx            *nginx.Manager
-	Certbot          *certbot.Manager
-	Docker           *dockerengine.Client
-	ContainerIPs     *containeripmap.Store
-	LogManager       *logmanager.Manager
-	UpstreamResolver upstream.Resolver
-	BuildInfo        BuildInfo
-	startedAt        time.Time
-	retryMu          sync.Mutex
-	retrying         map[string]bool
+	Store      store.Store
+	Nginx      *nginx.Manager
+	Certbot    *certbot.Manager
+	Docker     *dockerengine.Client
+	LogManager *logmanager.Manager
+	BuildInfo  BuildInfo
+	startedAt  time.Time
+	retryMu    sync.Mutex
+	retrying   map[string]bool
 }
 
 type BuildInfo struct {
@@ -56,21 +55,16 @@ type BuildInfo struct {
 	BuildTime string
 }
 
-func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockerengine.Client, ipStore *containeripmap.Store, l *logmanager.Manager, resolver upstream.Resolver, buildInfo BuildInfo) *Server {
-	if resolver == nil {
-		resolver = upstream.NewDefaultResolver(d)
-	}
+func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockerengine.Client, l *logmanager.Manager, buildInfo BuildInfo) *Server {
 	srv := &Server{
-		Store:            s,
-		Nginx:            n,
-		Certbot:          c,
-		Docker:           d,
-		ContainerIPs:     ipStore,
-		LogManager:       l,
-		UpstreamResolver: resolver,
-		BuildInfo:        buildInfo,
-		startedAt:        time.Now(),
-		retrying:         make(map[string]bool),
+		Store:      s,
+		Nginx:      n,
+		Certbot:    c,
+		Docker:     d,
+		LogManager: l,
+		BuildInfo:  buildInfo,
+		startedAt:  time.Now(),
+		retrying:   make(map[string]bool),
 	}
 	go srv.certRetryLoop()
 	go srv.upstreamSyncLoop()
@@ -80,7 +74,6 @@ func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockereng
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", s.handleHealth)
-	mux.HandleFunc("/v1/upstreams/cache", s.handleUpstreamCache)
 	mux.HandleFunc("/v1/sites", s.handleSites)           // GET, POST
 	mux.HandleFunc("/v1/sites/", s.handleSiteDetail)     // GET, DELETE, PATCH
 	mux.HandleFunc("/v1/streams", s.handleStreams)       // GET, POST
@@ -145,11 +138,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if !nginxHealth.Available || !nginxHealth.Running || !certbotHealth.Available || !dockerHealth.Available {
 		status = "degraded"
 	}
-	containerIPCache := map[string]interface{}{"count": 0}
-	if s.ContainerIPs != nil {
-		containerIPCache["count"] = s.ContainerIPs.Count()
-		containerIPCache["path"] = s.ContainerIPs.Path()
-	}
 
 	jsonResponse(w, 200, map[string]interface{}{
 		"status": status,
@@ -162,33 +150,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			"started_at": s.startedAt.UTC().Format(time.RFC3339),
 			"uptime":     time.Since(s.startedAt).String(),
 		},
-		"nginx":              nginxHealth,
-		"certbot":            certbotHealth,
-		"docker":             dockerHealth,
-		"container_ip_cache": containerIPCache,
+		"nginx":   nginxHealth,
+		"certbot": certbotHealth,
+		"docker":  dockerHealth,
 		"store": map[string]interface{}{
 			"sites_count":   len(sites),
 			"streams_count": len(streams),
 		},
-	})
-}
-
-func (s *Server) handleUpstreamCache(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", 405)
-		return
-	}
-
-	if s.ContainerIPs == nil {
-		errorResponse(w, 503, "container ip cache is not configured")
-		return
-	}
-
-	data := s.ContainerIPs.GetAll()
-	jsonResponse(w, 200, map[string]interface{}{
-		"count":    len(data),
-		"path":     s.ContainerIPs.Path(),
-		"mappings": data,
 	})
 }
 
@@ -205,55 +173,52 @@ func normalizeStreamUpstream(upstreamAddress string, containerPort int) (string,
 	return upstream.NormalizeEndpoint(upstreamAddress, containerPort)
 }
 
-func (s *Server) normalizeSiteUpstreams(upstreamsInput []string) ([]string, error) {
+func (s *Server) mapEndpointToContainerIP(endpoint string, overridePort int, preferredNetwork string) (string, string, string, error) {
+	normalized, err := upstream.NormalizeEndpoint(endpoint, overridePort)
+	if err != nil {
+		return "", "", "", err
+	}
+	host, port, err := upstream.ParseEndpoint(normalized)
+	if err != nil {
+		return "", "", "", err
+	}
+	if upstream.IsIPHost(host) {
+		return normalized, "", "", nil
+	}
+	if s.Docker == nil {
+		return "", "", "", fmt.Errorf("docker engine is unavailable")
+	}
+
+	networkIPs, err := s.Docker.ResolveContainerIPs(host)
+	if err != nil {
+		return "", "", "", err
+	}
+	ip, network := dockerengine.PickIPFromNetworks(networkIPs, preferredNetwork, "")
+	if ip == "" {
+		return "", "", "", fmt.Errorf("no container ip found for %s", host)
+	}
+
+	return net.JoinHostPort(ip, strconv.Itoa(port)), host, network, nil
+}
+
+func (s *Server) normalizeSiteUpstreams(upstreamsInput []string) ([]string, []string, []string, error) {
 	if len(upstreamsInput) == 0 {
-		return nil, fmt.Errorf("at least one upstream is required")
+		return nil, nil, nil, fmt.Errorf("at least one upstream is required")
 	}
 
 	normalized := make([]string, 0, len(upstreamsInput))
+	containers := make([]string, 0, len(upstreamsInput))
+	networks := make([]string, 0, len(upstreamsInput))
 	for _, upstreamAddress := range upstreamsInput {
-		normalizedUpstream, err := upstream.NormalizeEndpoint(upstreamAddress, 0)
+		mapped, containerName, networkName, err := s.mapEndpointToContainerIP(upstreamAddress, 0, "")
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
-		normalized = append(normalized, normalizedUpstream)
+		normalized = append(normalized, mapped)
+		containers = append(containers, containerName)
+		networks = append(networks, networkName)
 	}
-	return normalized, nil
-}
-
-func (s *Server) resolveEndpointAndTrack(raw string, overridePort int) (string, error) {
-	host, _, err := upstream.ParseEndpoint(raw)
-	if err != nil {
-		return "", err
-	}
-
-	resolved, err := s.UpstreamResolver.Resolve(raw, overridePort)
-	if err != nil {
-		return "", err
-	}
-
-	if !upstream.IsIPHost(host) && s.ContainerIPs != nil {
-		resolvedHost, _, parseErr := upstream.ParseEndpoint(resolved)
-		if parseErr == nil && upstream.IsIPHost(resolvedHost) {
-			if _, saveErr := s.ContainerIPs.Set(host, resolvedHost); saveErr != nil {
-				slog.Warn("failed to persist container ip mapping", "container", host, "error", saveErr)
-			}
-		}
-	}
-
-	return resolved, nil
-}
-
-func (s *Server) resolveSiteUpstreamsForRuntime(site *models.Site) ([]string, error) {
-	resolved := make([]string, 0, len(site.Upstreams))
-	for _, upstreamAddress := range site.Upstreams {
-		ipEndpoint, err := s.resolveEndpointAndTrack(upstreamAddress, 0)
-		if err != nil {
-			return nil, err
-		}
-		resolved = append(resolved, ipEndpoint)
-	}
-	return resolved, nil
+	return normalized, containers, networks, nil
 }
 
 func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
@@ -272,18 +237,25 @@ func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		upstreamAddress, err := normalizeStreamUpstream(req.Upstream, req.ContainerPort)
+		normalizedUpstream, err := normalizeStreamUpstream(req.Upstream, req.ContainerPort)
+		if err != nil {
+			errorResponse(w, 400, err.Error())
+			return
+		}
+		mappedUpstream, containerName, containerNetwork, err := s.mapEndpointToContainerIP(normalizedUpstream, 0, "")
 		if err != nil {
 			errorResponse(w, 400, err.Error())
 			return
 		}
 
 		stream := models.Stream{
-			ID:         strings.TrimSpace(req.ID),
-			ListenPort: req.ListenPort,
-			Upstream:   upstreamAddress,
-			Protocol:   strings.ToLower(strings.TrimSpace(req.Protocol)),
-			Domain:     strings.TrimSpace(req.Domain),
+			ID:               strings.TrimSpace(req.ID),
+			ListenPort:       req.ListenPort,
+			Upstream:         mappedUpstream,
+			ContainerName:    containerName,
+			ContainerNetwork: containerNetwork,
+			Protocol:         strings.ToLower(strings.TrimSpace(req.Protocol)),
+			Domain:           strings.TrimSpace(req.Domain),
 		}
 
 		if stream.ListenPort == 0 {
@@ -391,14 +363,7 @@ func (s *Server) reconcileStreams(port int) {
 	var portStreams []models.Stream
 	for _, str := range allStreams {
 		if str.ListenPort == port {
-			resolved, resolveErr := s.resolveEndpointAndTrack(str.Upstream, 0)
-			if resolveErr != nil {
-				s.updateStreamStatus(str.ID, "error", "failed to resolve upstream: "+resolveErr.Error())
-				continue
-			}
-			resolvedStream := str
-			resolvedStream.Upstream = resolved
-			portStreams = append(portStreams, resolvedStream)
+			portStreams = append(portStreams, str)
 		}
 	}
 	slog.Debug("Found streams for port", "port", port, "count", len(portStreams))
@@ -426,60 +391,36 @@ func (s *Server) provisionStream(stream *models.Stream) {
 }
 
 func (s *Server) upstreamSyncLoop() {
-	if s.Docker == nil || s.ContainerIPs == nil {
+	if s.Docker == nil {
 		return
 	}
 
 	ticker := time.NewTicker(upstreamSyncInterval)
 	defer ticker.Stop()
 
-	s.syncContainerIPsAndRefresh()
+	s.syncUpstreamsAndRefresh()
 	for range ticker.C {
-		s.syncContainerIPsAndRefresh()
+		s.syncUpstreamsAndRefresh()
 	}
 }
 
-func (s *Server) syncContainerIPsAndRefresh() {
-	names, affectedSiteIDs, affectedPorts, err := s.collectTrackedContainerRefs()
+func (s *Server) syncUpstreamsAndRefresh() {
+	siteChanged, siteIDs, err := s.syncSitesFromContainers()
 	if err != nil {
-		slog.Debug("container ip sync skipped", "error", err)
+		slog.Debug("site upstream sync skipped", "error", err)
 		return
 	}
-	if len(names) == 0 {
-		return
-	}
-
-	changedNames := make(map[string]bool)
-	for name := range names {
-		ip, err := s.Docker.ResolveContainerIP(name)
-		if err != nil {
-			continue
-		}
-		changed, err := s.ContainerIPs.Set(name, ip)
-		if err != nil {
-			slog.Warn("failed saving container ip mapping", "name", name, "error", err)
-			continue
-		}
-		if changed {
-			changedNames[name] = true
-		}
-	}
-	if len(changedNames) == 0 {
+	streamChanged, ports, err := s.syncStreamsFromContainers()
+	if err != nil {
+		slog.Debug("stream upstream sync skipped", "error", err)
 		return
 	}
 
-	siteIDsToRefresh := make(map[string]bool)
-	portsToRefresh := make(map[int]bool)
-	for name := range changedNames {
-		for siteID := range affectedSiteIDs[name] {
-			siteIDsToRefresh[siteID] = true
-		}
-		for port := range affectedPorts[name] {
-			portsToRefresh[port] = true
-		}
+	if !siteChanged && !streamChanged {
+		return
 	}
 
-	for siteID := range siteIDsToRefresh {
+	for _, siteID := range siteIDs {
 		site, err := s.Store.GetSite(siteID)
 		if err != nil {
 			continue
@@ -487,59 +428,170 @@ func (s *Server) syncContainerIPsAndRefresh() {
 		siteCopy := *site
 		go s.refreshSiteConfig(&siteCopy)
 	}
-	for port := range portsToRefresh {
+	for _, port := range ports {
 		go s.reconcileStreams(port)
 	}
 
-	slog.Info(
-		"container ip changes applied",
-		"changed_containers", len(changedNames),
-		"affected_sites", len(siteIDsToRefresh),
-		"affected_stream_ports", len(portsToRefresh),
-	)
+	slog.Info("upstream sync applied", "sites_changed", len(siteIDs), "stream_ports_changed", len(ports))
 }
 
-func (s *Server) collectTrackedContainerRefs() (map[string]bool, map[string]map[string]bool, map[string]map[int]bool, error) {
+func (s *Server) syncSitesFromContainers() (bool, []string, error) {
 	sites, err := s.Store.ListSites()
 	if err != nil {
-		return nil, nil, nil, err
-	}
-	streams, err := s.Store.ListStreams()
-	if err != nil {
-		return nil, nil, nil, err
+		return false, nil, err
 	}
 
-	names := make(map[string]bool)
-	siteRefs := make(map[string]map[string]bool)
-	streamRefs := make(map[string]map[int]bool)
-
+	changed := false
+	changedIDs := make(map[string]bool)
 	for _, site := range sites {
-		for _, endpoint := range site.Upstreams {
-			host, _, parseErr := upstream.ParseEndpoint(endpoint)
-			if parseErr != nil || upstream.IsIPHost(host) {
-				continue
-			}
-			names[host] = true
-			if siteRefs[host] == nil {
-				siteRefs[host] = make(map[string]bool)
-			}
-			siteRefs[host][site.ID] = true
-		}
-	}
-
-	for _, stream := range streams {
-		host, _, parseErr := upstream.ParseEndpoint(stream.Upstream)
-		if parseErr != nil || upstream.IsIPHost(host) {
+		siteChanged, updatedSite, err := s.refreshSiteUpstreamsFromContainer(site)
+		if err != nil {
+			slog.Debug("site upstream sync error", "site_id", site.ID, "error", err)
 			continue
 		}
-		names[host] = true
-		if streamRefs[host] == nil {
-			streamRefs[host] = make(map[int]bool)
+		if !siteChanged {
+			continue
 		}
-		streamRefs[host][stream.ListenPort] = true
+		if err := s.Store.SaveSite(&updatedSite); err != nil {
+			slog.Warn("failed to persist refreshed site upstreams", "site_id", site.ID, "error", err)
+			continue
+		}
+		changed = true
+		changedIDs[site.ID] = true
 	}
 
-	return names, siteRefs, streamRefs, nil
+	siteIDs := make([]string, 0, len(changedIDs))
+	for id := range changedIDs {
+		siteIDs = append(siteIDs, id)
+	}
+	sort.Strings(siteIDs)
+	return changed, siteIDs, nil
+}
+
+func (s *Server) syncStreamsFromContainers() (bool, []int, error) {
+	streams, err := s.Store.ListStreams()
+	if err != nil {
+		return false, nil, err
+	}
+
+	changed := false
+	changedPorts := make(map[int]bool)
+	for _, stream := range streams {
+		changedStream, updated, err := s.refreshStreamUpstreamFromContainer(stream)
+		if err != nil {
+			slog.Debug("stream upstream sync error", "stream_id", stream.ID, "error", err)
+			continue
+		}
+		if !changedStream {
+			continue
+		}
+		if err := s.Store.SaveStream(&updated); err != nil {
+			slog.Warn("failed to persist refreshed stream upstream", "stream_id", stream.ID, "error", err)
+			continue
+		}
+		changed = true
+		changedPorts[stream.ListenPort] = true
+	}
+
+	ports := make([]int, 0, len(changedPorts))
+	for p := range changedPorts {
+		ports = append(ports, p)
+	}
+	sort.Ints(ports)
+	return changed, ports, nil
+}
+
+func (s *Server) refreshSiteUpstreamsFromContainer(site models.Site) (bool, models.Site, error) {
+	changed := false
+
+	if len(site.UpstreamContainers) < len(site.Upstreams) {
+		padded := make([]string, len(site.Upstreams))
+		copy(padded, site.UpstreamContainers)
+		site.UpstreamContainers = padded
+	}
+	if len(site.UpstreamNetworks) < len(site.Upstreams) {
+		padded := make([]string, len(site.Upstreams))
+		copy(padded, site.UpstreamNetworks)
+		site.UpstreamNetworks = padded
+	}
+
+	for i := range site.Upstreams {
+		container := strings.TrimSpace(site.UpstreamContainers[i])
+		if container == "" {
+			host, _, parseErr := upstream.ParseEndpoint(site.Upstreams[i])
+			if parseErr == nil && !upstream.IsIPHost(host) {
+				container = host
+				site.UpstreamContainers[i] = host
+				changed = true
+			}
+		}
+		if container == "" {
+			continue
+		}
+		currentHost, currentPort, err := upstream.ParseEndpoint(site.Upstreams[i])
+		if err != nil {
+			continue
+		}
+		networkIPs, err := s.Docker.ResolveContainerIPs(container)
+		if err != nil {
+			continue
+		}
+
+		newIP, newNetwork := dockerengine.PickIPFromNetworks(networkIPs, site.UpstreamNetworks[i], currentHost)
+		if newIP == "" {
+			continue
+		}
+		newEndpoint := net.JoinHostPort(newIP, strconv.Itoa(currentPort))
+		if newEndpoint != site.Upstreams[i] || newNetwork != site.UpstreamNetworks[i] {
+			site.Upstreams[i] = newEndpoint
+			site.UpstreamNetworks[i] = newNetwork
+			changed = true
+		}
+	}
+
+	if changed {
+		site.UpdatedAt = time.Now()
+	}
+	return changed, site, nil
+}
+
+func (s *Server) refreshStreamUpstreamFromContainer(stream models.Stream) (bool, models.Stream, error) {
+	metadataChanged := false
+	container := strings.TrimSpace(stream.ContainerName)
+	if container == "" {
+		host, _, parseErr := upstream.ParseEndpoint(stream.Upstream)
+		if parseErr == nil && !upstream.IsIPHost(host) {
+			container = host
+			stream.ContainerName = host
+			metadataChanged = true
+		}
+	}
+	if container == "" {
+		return false, stream, nil
+	}
+	currentHost, currentPort, err := upstream.ParseEndpoint(stream.Upstream)
+	if err != nil {
+		return false, stream, err
+	}
+	networkIPs, err := s.Docker.ResolveContainerIPs(container)
+	if err != nil {
+		return false, stream, err
+	}
+	newIP, newNetwork := dockerengine.PickIPFromNetworks(networkIPs, stream.ContainerNetwork, currentHost)
+	if newIP == "" {
+		return metadataChanged, stream, nil
+	}
+	newEndpoint := net.JoinHostPort(newIP, strconv.Itoa(currentPort))
+	if newEndpoint == stream.Upstream && newNetwork == stream.ContainerNetwork {
+		if metadataChanged {
+			stream.UpdatedAt = time.Now()
+		}
+		return metadataChanged, stream, nil
+	}
+	stream.Upstream = newEndpoint
+	stream.ContainerNetwork = newNetwork
+	stream.UpdatedAt = time.Now()
+	return true, stream, nil
 }
 
 func (s *Server) updateStreamStatus(id, status, msg string) {
@@ -746,12 +798,14 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, 400, "invalid json")
 			return
 		}
-		normalizedUpstreams, err := s.normalizeSiteUpstreams(site.Upstreams)
+		normalizedUpstreams, containers, networks, err := s.normalizeSiteUpstreams(site.Upstreams)
 		if err != nil {
 			errorResponse(w, 400, err.Error())
 			return
 		}
 		site.Upstreams = normalizedUpstreams
+		site.UpstreamContainers = containers
+		site.UpstreamNetworks = networks
 		if site.ID == "" {
 			site.ID = site.Domain // Simple ID generation
 		}
@@ -883,12 +937,14 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 
 		// Apply other updates
 		if input.Upstreams != nil {
-			normalizedUpstreams, resolveErr := s.normalizeSiteUpstreams(input.Upstreams)
+			normalizedUpstreams, containers, networks, resolveErr := s.normalizeSiteUpstreams(input.Upstreams)
 			if resolveErr != nil {
 				errorResponse(w, 400, resolveErr.Error())
 				return
 			}
 			site.Upstreams = normalizedUpstreams
+			site.UpstreamContainers = containers
+			site.UpstreamNetworks = networks
 		}
 		if input.ForceSSL != nil {
 			site.ForceSSL = *input.ForceSSL
@@ -933,13 +989,7 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) refreshSiteConfig(site *models.Site) {
 	slog.Info("Refreshing site config", "site_id", site.ID, "domain", site.Domain)
-	resolvedUpstreams, err := s.resolveSiteUpstreamsForRuntime(site)
-	if err != nil {
-		s.updateStatus(site.ID, "error", "failed to resolve upstream(s): "+err.Error())
-		return
-	}
 	runtimeSite := *site
-	runtimeSite.Upstreams = resolvedUpstreams
 	preserveMessage := ""
 	if currentSite, err := s.Store.GetSite(site.ID); err == nil {
 		if currentSite.CertIssueStatus == "retrying" || currentSite.CertIssueStatus == "failed" {
@@ -978,13 +1028,7 @@ func (s *Server) refreshSiteConfig(site *models.Site) {
 
 func (s *Server) provisionSite(site *models.Site) {
 	slog.Info("Provisioning site", "site_id", site.ID, "domain", site.Domain, "ssl_requested", site.SSL)
-	resolvedUpstreams, err := s.resolveSiteUpstreamsForRuntime(site)
-	if err != nil {
-		s.updateStatus(site.ID, "error", "failed to resolve upstream(s): "+err.Error())
-		return
-	}
 	runtimeSite := *site
-	runtimeSite.Upstreams = resolvedUpstreams
 
 	// 1. Generate Nginx Config (HTTP)
 	// 2. Test & Reload

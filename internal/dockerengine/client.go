@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"sort"
 	"strings"
 	"time"
 )
@@ -80,25 +81,65 @@ func (c *Client) Version() (*versionResponse, error) {
 }
 
 func (c *Client) ResolveContainerIP(container string) (string, error) {
-	body, err := c.get(path.Join("/containers", container, "json"))
+	ips, err := c.ResolveContainerIPs(container)
 	if err != nil {
 		return "", err
+	}
+	ip, _ := PickIPFromNetworks(ips, "", "")
+	if ip != "" {
+		return ip, nil
+	}
+	return "", fmt.Errorf("no container IP found for %s", container)
+}
+
+func (c *Client) ResolveContainerIPs(container string) (map[string]string, error) {
+	body, err := c.get(path.Join("/containers", container, "json"))
+	if err != nil {
+		return nil, err
 	}
 	defer body.Close()
 
 	var inspect inspectResponse
 	if err := json.NewDecoder(body).Decode(&inspect); err != nil {
-		return "", fmt.Errorf("failed to parse docker inspect response: %w", err)
+		return nil, fmt.Errorf("failed to parse docker inspect response: %w", err)
 	}
 
-	for _, netCfg := range inspect.NetworkSettings.Networks {
+	out := make(map[string]string)
+	for networkName, netCfg := range inspect.NetworkSettings.Networks {
 		ip := strings.TrimSpace(netCfg.IPAddress)
 		if ip != "" {
-			return ip, nil
+			out[networkName] = ip
 		}
 	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no container IP found for %s", container)
+	}
+	return out, nil
+}
 
-	return "", fmt.Errorf("no container IP found for %s", container)
+func PickIPFromNetworks(networkIPs map[string]string, preferredNetwork string, fallbackIP string) (string, string) {
+	if preferredNetwork != "" {
+		if ip := strings.TrimSpace(networkIPs[preferredNetwork]); ip != "" {
+			return ip, preferredNetwork
+		}
+	}
+	for networkName, ip := range networkIPs {
+		if strings.TrimSpace(ip) == strings.TrimSpace(fallbackIP) && ip != "" {
+			return ip, networkName
+		}
+	}
+	networkNames := make([]string, 0, len(networkIPs))
+	for networkName := range networkIPs {
+		networkNames = append(networkNames, networkName)
+	}
+	sort.Strings(networkNames)
+	for _, networkName := range networkNames {
+		ip := networkIPs[networkName]
+		if ip != "" {
+			return ip, networkName
+		}
+	}
+	return "", ""
 }
 
 func (c *Client) get(endpoint string) (io.ReadCloser, error) {

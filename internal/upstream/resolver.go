@@ -3,19 +3,22 @@ package upstream
 import (
 	"fmt"
 	"net"
-	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/hubfly/hubfly-reverse-proxy/internal/dockerengine"
 )
 
 type Resolver interface {
 	Resolve(upstream string, overridePort int) (string, error)
 }
 
-type DefaultResolver struct{}
+type DefaultResolver struct {
+	docker *dockerengine.Client
+}
 
-func NewDefaultResolver() *DefaultResolver {
-	return &DefaultResolver{}
+func NewDefaultResolver(dockerClient *dockerengine.Client) *DefaultResolver {
+	return &DefaultResolver{docker: dockerClient}
 }
 
 func (r *DefaultResolver) Resolve(upstream string, overridePort int) (string, error) {
@@ -39,7 +42,7 @@ func (r *DefaultResolver) Resolve(upstream string, overridePort int) (string, er
 		return "", fmt.Errorf("upstream must include a valid port")
 	}
 
-	resolvedHost, err := resolveHost(host)
+	resolvedHost, err := r.resolveHost(host)
 	if err != nil {
 		return "", err
 	}
@@ -75,7 +78,7 @@ func splitHostAndPort(upstream string) (string, int, error) {
 	return host, port, nil
 }
 
-func resolveHost(host string) (string, error) {
+func (r *DefaultResolver) resolveHost(host string) (string, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.String(), nil
 	}
@@ -87,8 +90,10 @@ func resolveHost(host string) (string, error) {
 		}
 	}
 
-	if dockerIP, dockerErr := lookupDockerContainerIP(host); dockerErr == nil && dockerIP != "" {
-		return dockerIP, nil
+	if r.docker != nil {
+		if dockerIP, dockerErr := r.docker.ResolveContainerIP(host); dockerErr == nil && dockerIP != "" {
+			return dockerIP, nil
+		}
 	}
 
 	if err != nil {
@@ -109,25 +114,4 @@ func pickPreferredIP(ips []net.IP) string {
 		}
 	}
 	return ""
-}
-
-func lookupDockerContainerIP(container string) (string, error) {
-	path, err := exec.LookPath("docker")
-	if err != nil {
-		return "", err
-	}
-
-	cmd := exec.Command(path, "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}", container)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", err
-	}
-
-	fields := strings.Fields(strings.TrimSpace(string(out)))
-	for _, field := range fields {
-		if ip := net.ParseIP(field); ip != nil {
-			return ip.String(), nil
-		}
-	}
-	return "", fmt.Errorf("no container IP found")
 }

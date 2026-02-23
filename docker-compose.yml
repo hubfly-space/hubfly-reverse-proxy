@@ -5,22 +5,16 @@ services:
     build: .
     container_name: hubfly-reverse-proxy
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "81:81" # Management API
-      - "82:82" # Management UI & Proxy
-      - "30000-30100:30000-30100"
+    network_mode: host
     volumes:
       - hubfly_proxy_data:/etc/hubfly
       - hubfly_proxy_certs:/etc/letsencrypt
       - hubfly_proxy_webroot:/var/www/hubfly
       - ./static:/var/www/hubfly/static
       - ./templates:/etc/hubfly/templates
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - TZ=UTC
-    networks:
-      - hubfly-proxy-network
 
 volumes:
   hubfly_proxy_data:
@@ -29,8 +23,3 @@ volumes:
     name: hubfly_proxy_certs
   hubfly_proxy_webroot:
     name: hubfly_proxy_webroot
-
-networks:
-  hubfly-proxy-network:
-    name: hubfly-proxy-network
-    driver: bridge

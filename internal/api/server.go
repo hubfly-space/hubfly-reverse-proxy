@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hubfly/hubfly-reverse-proxy/internal/certbot"
+	"github.com/hubfly/hubfly-reverse-proxy/internal/dockerengine"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/logmanager"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/models"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/nginx"
@@ -37,6 +38,7 @@ type Server struct {
 	Store            store.Store
 	Nginx            *nginx.Manager
 	Certbot          *certbot.Manager
+	Docker           *dockerengine.Client
 	LogManager       *logmanager.Manager
 	UpstreamResolver upstream.Resolver
 	BuildInfo        BuildInfo
@@ -51,14 +53,15 @@ type BuildInfo struct {
 	BuildTime string
 }
 
-func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, l *logmanager.Manager, resolver upstream.Resolver, buildInfo BuildInfo) *Server {
+func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockerengine.Client, l *logmanager.Manager, resolver upstream.Resolver, buildInfo BuildInfo) *Server {
 	if resolver == nil {
-		resolver = upstream.NewDefaultResolver()
+		resolver = upstream.NewDefaultResolver(d)
 	}
 	srv := &Server{
 		Store:            s,
 		Nginx:            n,
 		Certbot:          c,
+		Docker:           d,
 		LogManager:       l,
 		UpstreamResolver: resolver,
 		BuildInfo:        buildInfo,
@@ -128,8 +131,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	nginxHealth := s.Nginx.Health()
 	certbotHealth := s.Certbot.Health()
+	dockerHealth := dockerengine.Health{Available: false}
+	if s.Docker != nil {
+		dockerHealth = s.Docker.Health()
+	}
 	status := "ok"
-	if !nginxHealth.Available || !nginxHealth.Running || !certbotHealth.Available {
+	if !nginxHealth.Available || !nginxHealth.Running || !certbotHealth.Available || !dockerHealth.Available {
 		status = "degraded"
 	}
 
@@ -146,6 +153,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		},
 		"nginx":   nginxHealth,
 		"certbot": certbotHealth,
+		"docker":  dockerHealth,
 		"store": map[string]interface{}{
 			"sites_count":   len(sites),
 			"streams_count": len(streams),

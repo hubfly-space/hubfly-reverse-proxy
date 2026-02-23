@@ -5,7 +5,7 @@ import "testing"
 func TestResolve(t *testing.T) {
 	t.Parallel()
 
-	r := NewDefaultResolver()
+	r := NewDefaultResolver(nil)
 	tests := []struct {
 		name         string
 		upstream     string

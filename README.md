@@ -2,37 +2,20 @@
 
 A lightweight, single container reverse proxy appliance wrapping NGINX and Certbot with a Go based REST API. It provides safe, atomic configuration management and automated SSL certificate handling.
 
-## Host Runtime Mode (No Docker Engine Required)
+## Runtime Model
 
-Hubfly can now run as a host controller for external `nginx` and `certbot`, with project-local runtime paths by default.
+Hubfly runs NGINX, Certbot, and the Go API in one container. The container is expected to run with host networking and have Docker Engine socket access:
 
-- Default runtime root: `.runtime/`
-- Default config store: `.runtime/config`
-- Default generated nginx config: `.runtime/nginx/nginx.conf`
-- Default cert storage root: `.runtime/letsencrypt`
-- Default webroot: `.runtime/www`
-- Default logs dir: `.runtime/logs`
+- `network_mode: host`
+- `/var/run/docker.sock:/var/run/docker.sock`
 
-Run directly:
+Default in-container paths remain:
 
-```bash
-go run ./cmd/hubfly --port 81
-```
-
-Useful overrides:
-
-```bash
-go run ./cmd/hubfly \
-  --runtime-dir .runtime \
-  --nginx-bin /usr/sbin/nginx \
-  --certbot-bin /usr/bin/certbot \
-  --nginx-conf .runtime/nginx/nginx.conf
-```
-
-Notes:
-- If `.runtime/nginx/nginx.conf` is missing, Hubfly writes a default one.
-- If `--nginx-bin` / `--certbot-bin` are not set, Hubfly falls back to `$PATH`.
-- NGINX is actively managed: reload tries are followed by automatic start/recovery when needed.
+- Config/data: `/etc/hubfly`
+- Certificates: `/etc/letsencrypt`
+- Webroot: `/var/www/hubfly`
+- Logs: `/var/log/hubfly`
+- NGINX config: `/etc/nginx/nginx.conf`
 
 ## Versioning
 
@@ -96,22 +79,6 @@ Hubfly integrates **GoAccess** for real-time, visual web traffic analytics.
 
 ---
 
-## Network Management
-
-To simplify multi-project deployments, Hubfly includes a utility to automatically connect to specific Docker networks.
-
-### Automatic Network Attachment
-When deploying via `deploy.sh`, the system automatically runs `attach_networks.sh`.
-
-- **Function**: Scans for all Docker networks starting with the prefix `proj-network-proj_`.
-- **Action**: Attaches the `hubfly-reverse-proxy` container to these networks if not already connected.
-- **Use Case**: Allows the proxy to reach containers in other docker-compose projects without manual network configuration.
-
-You can also run this manually on the server:
-```bash
-./attach_networks.sh
-```
-
 ---
 
 ## API Usage & Testing
@@ -128,6 +95,7 @@ Health now includes:
 - service version/commit/build time/go version/uptime
 - nginx availability, running state, binary, config, pid, version
 - certbot availability, binary, version, cert root, webroot
+- docker engine availability/version via `/var/run/docker.sock`
 - store counts (sites/streams)
 
 ### 2. Create a Simple Site (HTTP)

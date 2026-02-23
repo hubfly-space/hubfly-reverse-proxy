@@ -435,8 +435,16 @@ server {
 
 // RebuildStreamConfig generates the config for a specific port, handling multiple SNI streams.
 func (m *Manager) RebuildStreamConfig(port int, streams []models.Stream) error {
+	return m.rebuildStreamConfig(port, streams, true)
+}
+
+func (m *Manager) RebuildStreamConfigNoReload(port int, streams []models.Stream) error {
+	return m.rebuildStreamConfig(port, streams, false)
+}
+
+func (m *Manager) rebuildStreamConfig(port int, streams []models.Stream, reload bool) error {
 	if len(streams) == 0 {
-		return m.DeleteStreamConfig(port)
+		return m.deleteStreamConfig(port, reload)
 	}
 
 	// Check if we need SNI routing
@@ -532,16 +540,30 @@ server {
 	}
 	slog.Info("Rebuilt stream config", "port", port, "file", configFile)
 
-	return m.Reload()
+	if reload {
+		return m.Reload()
+	}
+	return nil
 }
 
 func (m *Manager) DeleteStreamConfig(port int) error {
+	return m.deleteStreamConfig(port, true)
+}
+
+func (m *Manager) DeleteStreamConfigNoReload(port int) error {
+	return m.deleteStreamConfig(port, false)
+}
+
+func (m *Manager) deleteStreamConfig(port int, reload bool) error {
 	target := filepath.Join(m.StreamsDir, fmt.Sprintf("port_%d.conf", port))
 	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	slog.Info("Deleted stream config", "port", port, "file", target)
-	return m.Reload()
+	if reload {
+		return m.Reload()
+	}
+	return nil
 }
 
 // Validate runs nginx -t against the staging config
@@ -574,6 +596,14 @@ func (m *Manager) runConfigTest() error {
 
 // Apply writes staging config to live sites dir, validates full nginx tree, and reloads.
 func (m *Manager) Apply(siteID, stagingFile string) error {
+	return m.apply(siteID, stagingFile, true)
+}
+
+func (m *Manager) ApplyNoReload(siteID, stagingFile string) error {
+	return m.apply(siteID, stagingFile, false)
+}
+
+func (m *Manager) apply(siteID, stagingFile string, reload bool) error {
 	target := filepath.Join(m.SitesDir, siteID+".conf")
 	stagingData, err := os.ReadFile(stagingFile)
 	if err != nil {
@@ -606,9 +636,11 @@ func (m *Manager) Apply(siteID, stagingFile string) error {
 		return err
 	}
 
-	if err := m.Reload(); err != nil {
-		restorePrevious()
-		return err
+	if reload {
+		if err := m.Reload(); err != nil {
+			restorePrevious()
+			return err
+		}
 	}
 
 	if err := os.Remove(stagingFile); err != nil && !os.IsNotExist(err) {

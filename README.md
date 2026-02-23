@@ -24,8 +24,11 @@ State files:
 Upstream controller behavior:
 - API accepts container-name upstreams (e.g. `my_app:3000`).
 - Hubfly stores both the current IP upstream and container metadata in `sites.json`/`streams.json`.
-- Every 2 seconds, Hubfly checks Docker for container IP changes and updates those files.
-- When upstream IPs change, Hubfly regenerates/reloads NGINX for zero-downtime updates.
+- Every 1 hour, Hubfly checks Docker for container IP changes and updates those files.
+- During a check cycle, Hubfly batches all detected changes, then performs a single NGINX reload at the end of the cycle.
+- Manual controls are available via:
+  - `POST /v1/control/reload`
+  - `POST /v1/control/full-check`
 
 ## Versioning
 
@@ -107,6 +110,15 @@ Health now includes:
 - certbot availability, binary, version, cert root, webroot
 - docker engine availability/version via `/var/run/docker.sock`
 - store counts (sites/streams)
+
+### 1.1 Manual NGINX/Sync Controls
+```bash
+# Force nginx reload immediately
+curl -X POST http://localhost:81/v1/control/reload
+
+# Run full upstream check against Docker, apply any changes, then reload once
+curl -X POST http://localhost:81/v1/control/full-check
+```
 
 ### 2. Create a Simple Site (HTTP)
 Forward traffic from `example.local` to a local upstream (e.g., a container IP or external site).

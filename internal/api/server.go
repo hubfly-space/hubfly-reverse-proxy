@@ -35,7 +35,7 @@ var certRetrySchedule = []time.Duration{
 }
 
 const certRetrySweepInterval = 30 * time.Second
-const upstreamSyncInterval = 2 * time.Second
+const upstreamSyncInterval = 1 * time.Hour
 
 type Server struct {
 	Store      store.Store
@@ -47,6 +47,7 @@ type Server struct {
 	startedAt  time.Time
 	retryMu    sync.Mutex
 	retrying   map[string]bool
+	syncMu     sync.Mutex
 }
 
 type BuildInfo struct {
@@ -115,6 +116,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/sites/", s.handleSiteDetail)     // GET, DELETE, PATCH
 	mux.HandleFunc("/v1/streams", s.handleStreams)       // GET, POST
 	mux.HandleFunc("/v1/streams/", s.handleStreamDetail) // GET, DELETE
+	mux.HandleFunc("/v1/control/reload", s.handleManualReload)
+	mux.HandleFunc("/v1/control/full-check", s.handleManualFullCheckReload)
 
 	return s.loggingMiddleware(mux)
 }
@@ -387,6 +390,10 @@ func (s *Server) handleStreamDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) reconcileStreams(port int) {
+	s.reconcileStreamsWithReload(port, true)
+}
+
+func (s *Server) reconcileStreamsWithReload(port int, reload bool) {
 	slog.Info("Reconciling streams", "port", port)
 
 	// 1. List all streams
@@ -410,8 +417,14 @@ func (s *Server) reconcileStreams(port int) {
 	slog.Debug("Found streams for port", "port", port, "count", len(portStreams))
 
 	// 3. Rebuild Config
-	if err := s.Nginx.RebuildStreamConfig(port, portStreams); err != nil {
-		slog.Error("reconcile error: failed to rebuild config", "port", port, "error", err)
+	var rebuildErr error
+	if reload {
+		rebuildErr = s.Nginx.RebuildStreamConfig(port, portStreams)
+	} else {
+		rebuildErr = s.Nginx.RebuildStreamConfigNoReload(port, portStreams)
+	}
+	if rebuildErr != nil {
+		slog.Error("reconcile error: failed to rebuild config", "port", port, "error", rebuildErr)
 		// Update status for all affected streams?
 		// For MVP, we log. In production, we should update status of all portStreams to 'error'.
 		return
@@ -446,19 +459,26 @@ func (s *Server) upstreamSyncLoop() {
 }
 
 func (s *Server) syncUpstreamsAndRefresh() {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	s.syncUpstreamsAndRefreshLocked(false)
+}
+
+func (s *Server) syncUpstreamsAndRefreshLocked(forceReload bool) (bool, int, int, error) {
 	siteChanged, siteIDs, err := s.syncSitesFromContainers()
 	if err != nil {
 		slog.Debug("site upstream sync skipped", "error", err)
-		return
+		return false, 0, 0, err
 	}
 	streamChanged, ports, err := s.syncStreamsFromContainers()
 	if err != nil {
 		slog.Debug("stream upstream sync skipped", "error", err)
-		return
+		return false, 0, 0, err
 	}
 
-	if !siteChanged && !streamChanged {
-		return
+	shouldReload := forceReload || siteChanged || streamChanged
+	if !shouldReload {
+		return false, 0, 0, nil
 	}
 
 	for _, siteID := range siteIDs {
@@ -467,13 +487,24 @@ func (s *Server) syncUpstreamsAndRefresh() {
 			continue
 		}
 		siteCopy := *site
-		go s.refreshSiteConfig(&siteCopy)
+		s.refreshSiteConfigWithReload(&siteCopy, false)
 	}
 	for _, port := range ports {
-		go s.reconcileStreams(port)
+		s.reconcileStreamsWithReload(port, false)
 	}
 
-	slog.Info("upstream sync applied", "sites_changed", len(siteIDs), "stream_ports_changed", len(ports))
+	if err := s.Nginx.Reload(); err != nil {
+		slog.Warn("upstream sync reload failed", "error", err)
+		return false, len(siteIDs), len(ports), err
+	}
+
+	slog.Info(
+		"upstream sync applied",
+		"sites_changed", len(siteIDs),
+		"stream_ports_changed", len(ports),
+		"force_reload", forceReload,
+	)
+	return true, len(siteIDs), len(ports), nil
 }
 
 func (s *Server) syncSitesFromContainers() (bool, []string, error) {
@@ -1029,6 +1060,10 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) refreshSiteConfig(site *models.Site) {
+	s.refreshSiteConfigWithReload(site, true)
+}
+
+func (s *Server) refreshSiteConfigWithReload(site *models.Site, reload bool) {
 	slog.Info("Refreshing site config", "site_id", site.ID, "domain", site.Domain)
 	runtimeSite := *site
 	preserveMessage := ""
@@ -1057,9 +1092,15 @@ func (s *Server) refreshSiteConfig(site *models.Site) {
 		return
 	}
 
-	if err := s.Nginx.Apply(site.ID, config); err != nil {
-		slog.Error("Config application failed", "site_id", site.ID, "error", err)
-		s.updateStatus(site.ID, "error", "apply failed: "+err.Error())
+	var applyErr error
+	if reload {
+		applyErr = s.Nginx.Apply(site.ID, config)
+	} else {
+		applyErr = s.Nginx.ApplyNoReload(site.ID, config)
+	}
+	if applyErr != nil {
+		slog.Error("Config application failed", "site_id", site.ID, "error", applyErr)
+		s.updateStatus(site.ID, "error", "apply failed: "+applyErr.Error())
 		return
 	}
 
@@ -1334,4 +1375,51 @@ func (s *Server) handleSiteFirewall(w http.ResponseWriter, r *http.Request, site
 	default:
 		http.Error(w, "method not allowed", 405)
 	}
+}
+
+func (s *Server) handleManualReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
+	if err := s.Nginx.Reload(); err != nil {
+		errorResponse(w, 500, "reload failed: "+err.Error())
+		return
+	}
+	jsonResponse(w, 200, map[string]interface{}{
+		"status": "reloaded",
+		"time":   time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) handleManualFullCheckReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+	if s.Docker == nil {
+		errorResponse(w, 503, "docker engine is unavailable")
+		return
+	}
+
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
+	reloaded, siteCount, streamCount, err := s.syncUpstreamsAndRefreshLocked(true)
+	if err != nil {
+		errorResponse(w, 500, "full check failed: "+err.Error())
+		return
+	}
+	jsonResponse(w, 200, map[string]interface{}{
+		"status":                "checked",
+		"reloaded":              reloaded,
+		"sites_changed":         siteCount,
+		"stream_ports_changed":  streamCount,
+		"next_scheduled_check":  time.Now().Add(upstreamSyncInterval).UTC().Format(time.RFC3339),
+		"requested_at_utc_time": time.Now().UTC().Format(time.RFC3339),
+	})
 }

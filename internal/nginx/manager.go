@@ -183,12 +183,13 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 
 	certPath, keyPath, usingFallbackCert := m.resolveCertPaths(site.Domain)
 	effectiveForceSSL := site.ForceSSL
+	useLoadBalancing := site.LoadBalancing != nil && site.LoadBalancing.Enabled
 	lbAlgorithm := "round_robin"
 	lbWeights := make([]int, len(site.Upstreams))
 	for i := range lbWeights {
 		lbWeights[i] = 1
 	}
-	if site.LoadBalancing != nil {
+	if useLoadBalancing {
 		if strings.TrimSpace(site.LoadBalancing.Algorithm) != "" {
 			lbAlgorithm = strings.ToLower(strings.TrimSpace(site.LoadBalancing.Algorithm))
 		}
@@ -209,7 +210,10 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 			Weight:  weight,
 		})
 	}
-	proxyPassTarget := fmt.Sprintf("http://%s", upstreamName)
+	proxyPassTarget := fmt.Sprintf("http://%s", site.Upstreams[0])
+	if useLoadBalancing {
+		proxyPassTarget = fmt.Sprintf("http://%s", upstreamName)
+	}
 
 	// Wrapper for template data
 	data := struct {
@@ -225,6 +229,7 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 		UpstreamName      string
 		UpstreamTargets   []upstreamTarget
 		LoadBalanceAlgo   string
+		UseLoadBalancing  bool
 		ProxyPassTarget   string
 	}{
 		Site:              site,
@@ -239,6 +244,7 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 		UpstreamName:      upstreamName,
 		UpstreamTargets:   upstreamTargets,
 		LoadBalanceAlgo:   lbAlgorithm,
+		UseLoadBalancing:  useLoadBalancing,
 		ProxyPassTarget:   proxyPassTarget,
 	}
 
@@ -253,6 +259,7 @@ limit_req_zone $binary_remote_addr zone=zone_{{ .ID }}:10m rate={{ .Firewall.Rat
 {{ end }}
 {{ end }}
 
+{{ if .UseLoadBalancing }}
 upstream {{ .UpstreamName }} {
     {{ if eq .LoadBalanceAlgo "least_conn" }}
     least_conn;
@@ -265,6 +272,7 @@ upstream {{ .UpstreamName }} {
     {{ end }}
     keepalive 32;
 }
+{{ end }}
 
 server {
     listen 80;

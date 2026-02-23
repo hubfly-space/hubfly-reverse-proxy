@@ -41,6 +41,7 @@ type APIResponse struct {
 
 // LoadBalancing configures site upstream balancing behavior.
 type LoadBalancing struct {
+	Enabled   bool   `json:"enabled,omitempty"`
 	Algorithm string `json:"algorithm,omitempty"` // round_robin (default), least_conn, ip_hash
 	Weights   []int  `json:"weights,omitempty"`   // Per-upstream weight, aligned by upstream index
 }

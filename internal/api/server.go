@@ -265,13 +265,22 @@ func normalizeSiteLoadBalancing(lb *models.LoadBalancing, upstreams []string) (*
 	if len(upstreams) == 0 {
 		return nil, fmt.Errorf("at least one upstream is required")
 	}
-
-	normalized := &models.LoadBalancing{}
-	if lb != nil {
-		*normalized = *lb
+	if lb == nil {
+		return nil, nil
 	}
 
-	algorithm := strings.ToLower(strings.TrimSpace(normalized.Algorithm))
+	normalized := &models.LoadBalancing{}
+	*normalized = *lb
+
+	algorithmInput := strings.TrimSpace(normalized.Algorithm)
+	hasWeights := len(normalized.Weights) > 0
+	if !normalized.Enabled && algorithmInput == "" && !hasWeights {
+		// Backward compatibility: no LB settings means legacy behavior.
+		return nil, nil
+	}
+	normalized.Enabled = true
+
+	algorithm := strings.ToLower(algorithmInput)
 	switch algorithm {
 	case "", "round_robin":
 		algorithm = "round_robin"

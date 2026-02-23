@@ -354,6 +354,7 @@ curl -X DELETE "http://localhost:81/v1/sites/example.local/firewall"
 
 ### 10. Load Balancing (Sites Only)
 Hubfly supports HTTP upstream load balancing per site.
+If `load_balancing` is omitted, site behavior stays backward compatible with legacy mode (single upstream proxy behavior as before).
 
 - `round_robin` (default)
 - `least_conn`
@@ -367,6 +368,7 @@ curl -X PATCH http://localhost:81/v1/sites/example.local \
   -H "Content-Type: application/json" \
   -d '{
     "load_balancing": {
+      "enabled": true,
       "algorithm": "least_conn",
       "weights": [1, 1]
     }
@@ -377,6 +379,7 @@ curl -X PATCH http://localhost:81/v1/sites/example.local \
   -H "Content-Type: application/json" \
   -d '{
     "load_balancing": {
+      "enabled": true,
       "algorithm": "ip_hash",
       "weights": [1, 1]
     }

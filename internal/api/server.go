@@ -71,6 +71,43 @@ func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockereng
 	return srv
 }
 
+// Bootstrap ensures stored site/stream state is reconciled to NGINX at startup.
+func (s *Server) Bootstrap() {
+	if s.Docker != nil {
+		_, _, _ = s.syncSitesFromContainers()
+		_, _, _ = s.syncStreamsFromContainers()
+	}
+
+	sites, err := s.Store.ListSites()
+	if err != nil {
+		slog.Error("bootstrap: failed to list sites", "error", err)
+	} else {
+		for _, site := range sites {
+			siteCopy := site
+			s.refreshSiteConfig(&siteCopy)
+		}
+	}
+
+	streams, err := s.Store.ListStreams()
+	if err != nil {
+		slog.Error("bootstrap: failed to list streams", "error", err)
+		return
+	}
+
+	portsMap := make(map[int]bool)
+	for _, stream := range streams {
+		portsMap[stream.ListenPort] = true
+	}
+	ports := make([]int, 0, len(portsMap))
+	for p := range portsMap {
+		ports = append(ports, p)
+	}
+	sort.Ints(ports)
+	for _, p := range ports {
+		s.reconcileStreams(p)
+	}
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", s.handleHealth)
@@ -363,6 +400,10 @@ func (s *Server) reconcileStreams(port int) {
 	var portStreams []models.Stream
 	for _, str := range allStreams {
 		if str.ListenPort == port {
+			if strings.TrimSpace(str.Upstream) == "" {
+				s.updateStreamStatus(str.ID, "error", "empty upstream")
+				continue
+			}
 			portStreams = append(portStreams, str)
 		}
 	}

@@ -82,6 +82,7 @@ func main() {
 		Commit:    gitCommit,
 		BuildTime: buildTime,
 	})
+	srv.Bootstrap()
 
 	slog.Info("Hubfly API starting", "address", ":"+*port)
 

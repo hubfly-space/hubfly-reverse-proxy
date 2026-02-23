@@ -80,6 +80,7 @@ func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockereng
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", s.handleHealth)
+	mux.HandleFunc("/v1/upstreams/cache", s.handleUpstreamCache)
 	mux.HandleFunc("/v1/sites", s.handleSites)           // GET, POST
 	mux.HandleFunc("/v1/sites/", s.handleSiteDetail)     // GET, DELETE, PATCH
 	mux.HandleFunc("/v1/streams", s.handleStreams)       // GET, POST
@@ -169,6 +170,25 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 			"sites_count":   len(sites),
 			"streams_count": len(streams),
 		},
+	})
+}
+
+func (s *Server) handleUpstreamCache(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+
+	if s.ContainerIPs == nil {
+		errorResponse(w, 503, "container ip cache is not configured")
+		return
+	}
+
+	data := s.ContainerIPs.GetAll()
+	jsonResponse(w, 200, map[string]interface{}{
+		"count":    len(data),
+		"path":     s.ContainerIPs.Path(),
+		"mappings": data,
 	})
 }
 

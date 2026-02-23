@@ -98,7 +98,13 @@ Health now includes:
 - docker engine availability/version via `/var/run/docker.sock`
 - store counts (sites/streams)
 
-### 2. Create a Simple Site (HTTP)
+### 2. View Container IP Cache
+Inspect the live docker-name to IP mapping cache used by the upstream controller.
+```bash
+curl -i http://localhost:81/v1/upstreams/cache
+```
+
+### 3. Create a Simple Site (HTTP)
 Forward traffic from `example.local` to a local upstream (e.g., a container IP or external site).
 ```bash
 curl -X POST http://localhost:81/v1/sites \
@@ -114,7 +120,7 @@ curl -X POST http://localhost:81/v1/sites \
 ```
 *Note: To test this locally, add `127.0.0.1 example.local` to your `/etc/hosts`.*
 
-### 3. Create a Site with SSL (Production)
+### 4. Create a Site with SSL (Production)
 **Prerequisite:** The domain must point to this server's public IP, and port 80/443 must be open.
 ```bash "basic-caching", 
 curl -X POST http://localhost:81/v1/sites \
@@ -129,19 +135,19 @@ curl -X POST http://localhost:81/v1/sites \
   }'
 ```
 
-### 4. List All Sites
+### 5. List All Sites
 See all configured sites and their status.
 ```bash
 curl http://localhost:81/v1/sites
 ```
 
-### 5. Get Site Details
+### 6. Get Site Details
 View configuration for a specific site.
 ```bash
 curl http://localhost:81/v1/sites/example.local
 ```
 
-### 6. Delete a Site
+### 7. Delete a Site
 Remove the NGINX config. Add `?revoke_cert=true` to also revoke the SSL certificate.
 ```bash
 curl -X DELETE http://localhost:81/v1/sites/example.local
@@ -149,7 +155,7 @@ curl -X DELETE http://localhost:81/v1/sites/example.local
 # curl -X DELETE "http://localhost:81/v1/sites/secure-site?revoke_cert=true"
 ```
 
-### 7. TCP/UDP Stream Proxying (Databases, SSH, etc.)
+### 8. TCP/UDP Stream Proxying (Databases, SSH, etc.)
 Hubfly can also proxy TCP and UDP traffic (Layer 4). This is useful for exposing databases, game servers, or other non-HTTP services.
 
 **Important:** You must ensure the `listen_port` is exposed in your Docker container (e.g., via `-p` flags in `docker run` or `ports` in `docker-compose.yml`).
@@ -185,7 +191,7 @@ curl -X DELETE http://localhost:81/v1/streams/db-1:3306
 curl -X DELETE http://localhost:81/v1/streams/mysql-db1
 ```
 
-### 8. Retrieve Site Logs
+### 9. Retrieve Site Logs
 Access detailed logs for a specific site. Logs are stored individually per domain (`.access.log` and `.error.log`).
 
 **Endpoint:** `GET /v1/sites/{id}/logs`
@@ -207,7 +213,7 @@ curl "http://localhost:81/v1/sites/example.local/logs?type=error&limit=50"
 curl "http://localhost:81/v1/sites/example.local/logs?type=access&search=POST&limit=20"
 ```
 
-### 9. Firewall Management
+### 10. Firewall Management
 Configure advanced access control rules per site.
 
 **IP-based Access Control**

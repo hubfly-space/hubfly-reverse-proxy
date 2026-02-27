@@ -37,29 +37,38 @@ func sanitizeName(input string) string {
 }
 
 type Manager struct {
-	SitesDir     string
-	StreamsDir   string
-	StagingDir   string
-	TemplatesDir string
-	NginxConf    string // Path to main nginx.conf
-	NginxBin     string
-	FallbackCert string
-	FallbackKey  string
-	CertsDir     string
-	WebrootDir   string
-	StaticDir    string
-	LogsDir      string
-	PIDFile      string
+	SitesDir      string
+	StreamsDir    string
+	StagingDir    string
+	TemplatesDir  string
+	NginxConf     string // Path to main nginx.conf
+	NginxBin      string
+	FallbackCert  string
+	FallbackKey   string
+	CertsDir      string
+	WebrootDir    string
+	StaticDir     string
+	LogsDir       string
+	PIDFile       string
+	WildcardCerts []WildcardCertificate
+}
+
+type WildcardCertificate struct {
+	Domain       string `json:"domain,omitempty"`
+	DomainSuffix string `json:"domain_suffix,omitempty"`
+	CertPath     string `json:"cert_path"`
+	KeyPath      string `json:"key_path"`
 }
 
 type Options struct {
-	NginxConf  string
-	NginxBin   string
-	CertsDir   string
-	WebrootDir string
-	StaticDir  string
-	LogsDir    string
-	PIDFile    string
+	NginxConf     string
+	NginxBin      string
+	CertsDir      string
+	WebrootDir    string
+	StaticDir     string
+	LogsDir       string
+	PIDFile       string
+	WildcardCerts []WildcardCertificate
 }
 
 type Health struct {
@@ -103,22 +112,24 @@ func NewManager(baseDir string, opts ...Options) *Manager {
 		if strings.TrimSpace(override.PIDFile) != "" {
 			cfg.PIDFile = strings.TrimSpace(override.PIDFile)
 		}
+		cfg.WildcardCerts = override.WildcardCerts
 	}
 
 	return &Manager{
-		SitesDir:     filepath.Join(baseDir, "sites"),
-		StreamsDir:   filepath.Join(baseDir, "streams"),
-		StagingDir:   filepath.Join(baseDir, "staging"),
-		TemplatesDir: filepath.Join(baseDir, "templates"),
-		NginxConf:    cfg.NginxConf,
-		NginxBin:     cfg.NginxBin,
-		FallbackCert: filepath.Join(baseDir, "default-certs", "fallback.crt"),
-		FallbackKey:  filepath.Join(baseDir, "default-certs", "fallback.key"),
-		CertsDir:     cfg.CertsDir,
-		WebrootDir:   cfg.WebrootDir,
-		StaticDir:    cfg.StaticDir,
-		LogsDir:      cfg.LogsDir,
-		PIDFile:      cfg.PIDFile,
+		SitesDir:      filepath.Join(baseDir, "sites"),
+		StreamsDir:    filepath.Join(baseDir, "streams"),
+		StagingDir:    filepath.Join(baseDir, "staging"),
+		TemplatesDir:  filepath.Join(baseDir, "templates"),
+		NginxConf:     cfg.NginxConf,
+		NginxBin:      cfg.NginxBin,
+		FallbackCert:  filepath.Join(baseDir, "default-certs", "fallback.crt"),
+		FallbackKey:   filepath.Join(baseDir, "default-certs", "fallback.key"),
+		CertsDir:      cfg.CertsDir,
+		WebrootDir:    cfg.WebrootDir,
+		StaticDir:     cfg.StaticDir,
+		LogsDir:       cfg.LogsDir,
+		PIDFile:       cfg.PIDFile,
+		WildcardCerts: cfg.WildcardCerts,
 	}
 }
 
@@ -153,9 +164,83 @@ func (m *Manager) realCertPaths(domain string) (string, string) {
 	return filepath.Join(base, "fullchain.pem"), filepath.Join(base, "privkey.pem")
 }
 
-func (m *Manager) resolveCertPaths(domain string) (string, string, bool) {
+func canonicalDomainPattern(input string) string {
+	return strings.Trim(strings.ToLower(strings.TrimSpace(input)), ".")
+}
+
+func (w WildcardCertificate) pattern() string {
+	if w.Domain != "" {
+		return canonicalDomainPattern(w.Domain)
+	}
+	return canonicalDomainPattern(w.DomainSuffix)
+}
+
+func domainMatchesPattern(domain, pattern string) bool {
+	if domain == "" || pattern == "" {
+		return false
+	}
+	if domain == pattern {
+		return true
+	}
+	return strings.HasSuffix(domain, "."+pattern)
+}
+
+func (m *Manager) wildcardCertificateForDomain(domain string) (WildcardCertificate, bool) {
+	normalizedDomain := canonicalDomainPattern(domain)
+	for _, wc := range m.WildcardCerts {
+		if domainMatchesPattern(normalizedDomain, wc.pattern()) {
+			return wc, true
+		}
+	}
+	return WildcardCertificate{}, false
+}
+
+func (m *Manager) wildcardCertPaths(domain string) (string, string, bool) {
+	wildcard, ok := m.wildcardCertificateForDomain(domain)
+	if !ok {
+		return "", "", false
+	}
+
+	certPath := strings.TrimSpace(wildcard.CertPath)
+	keyPath := strings.TrimSpace(wildcard.KeyPath)
+	if certPath == "" || keyPath == "" {
+		return certPath, keyPath, true
+	}
+	if !filepath.IsAbs(certPath) {
+		certPath = filepath.Join(m.CertsDir, certPath)
+	}
+	if !filepath.IsAbs(keyPath) {
+		keyPath = filepath.Join(m.CertsDir, keyPath)
+	}
+
+	return certPath, keyPath, true
+}
+
+func (m *Manager) ResolveDomainCertificate(domain string) (string, string, string, bool) {
 	certPath, keyPath := m.realCertPaths(domain)
 	if fileExists(certPath) && fileExists(keyPath) {
+		return certPath, keyPath, "domain", true
+	}
+
+	wildcardCertPath, wildcardKeyPath, configured := m.wildcardCertPaths(domain)
+	if configured {
+		if fileExists(wildcardCertPath) && fileExists(wildcardKeyPath) {
+			return wildcardCertPath, wildcardKeyPath, "wildcard", true
+		}
+		return wildcardCertPath, wildcardKeyPath, "wildcard", false
+	}
+
+	return certPath, keyPath, "none", false
+}
+
+func (m *Manager) IsWildcardDomain(domain string) bool {
+	_, ok := m.wildcardCertificateForDomain(domain)
+	return ok
+}
+
+func (m *Manager) resolveCertPaths(domain string) (string, string, bool) {
+	certPath, keyPath, _, found := m.ResolveDomainCertificate(domain)
+	if found {
 		return certPath, keyPath, false
 	}
 	return m.FallbackCert, m.FallbackKey, true

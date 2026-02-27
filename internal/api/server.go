@@ -948,6 +948,21 @@ func (s *Server) clearCertRetryState(siteID string) {
 
 func (s *Server) issueCertificate(domain string) error {
 	slog.Info("certificate_issue_started", "domain", domain)
+
+	certPath, keyPath, source, exists := s.Nginx.ResolveDomainCertificate(domain)
+	if source == "wildcard" {
+		if !exists {
+			return fmt.Errorf(
+				"wildcard certificate configured for domain %s but files are missing: cert=%s key=%s",
+				domain,
+				certPath,
+				keyPath,
+			)
+		}
+		slog.Info("certificate_issue_skipped_using_wildcard", "domain", domain, "cert_path", certPath, "key_path", keyPath)
+		return nil
+	}
+
 	if err := s.Certbot.Issue(domain); err != nil {
 		slog.Error("certificate_issue_failed", "domain", domain, "error", err)
 		return err
@@ -1105,9 +1120,13 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if revoke && site.SSL {
-			if err := s.Certbot.Revoke(site.Domain); err != nil {
-				slog.Error("Failed to revoke cert", "domain", site.Domain, "error", err)
-				// continue to delete
+			if s.Nginx.IsWildcardDomain(site.Domain) {
+				slog.Info("Skipping cert revocation for wildcard-mapped domain", "domain", site.Domain)
+			} else {
+				if err := s.Certbot.Revoke(site.Domain); err != nil {
+					slog.Error("Failed to revoke cert", "domain", site.Domain, "error", err)
+					// continue to delete
+				}
 			}
 		}
 

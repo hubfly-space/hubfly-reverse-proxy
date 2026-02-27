@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,6 +34,7 @@ func main() {
 	nginxPid := flag.String("nginx-pid", "/var/run/nginx.pid", "Path to nginx PID file")
 	certbotBin := flag.String("certbot-bin", "", "Path to certbot binary (optional)")
 	certsDir := flag.String("certs-dir", "/etc/letsencrypt", "Certificate base directory")
+	wildcardCertsConfig := flag.String("wildcard-certs-config", "", "Path to wildcard certificate JSON config (optional, defaults to <certs-dir>/wildcards/config.json when present)")
 	webrootDir := flag.String("webroot-dir", "/var/www/hubfly", "Webroot directory for ACME HTTP-01")
 	logsDir := flag.String("logs-dir", "/var/log/hubfly", "Directory for per-site logs")
 	appLogDir := flag.String("app-log-dir", "/var/log/hubfly-go", "Directory for Hubfly Go application logs")
@@ -76,6 +79,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	wildcardConfigPath := strings.TrimSpace(*wildcardCertsConfig)
+	if wildcardConfigPath == "" {
+		wildcardConfigPath = filepath.Join(*certsDir, "wildcards", "config.json")
+	}
+	wildcardCerts, err := loadWildcardCertsConfig(wildcardConfigPath)
+	if err != nil {
+		slog.Error("Failed to load wildcard certificates config", "path", wildcardConfigPath, "error", err)
+		os.Exit(1)
+	}
+	if len(wildcardCerts) > 0 {
+		slog.Info("Loaded wildcard certificate mappings", "path", wildcardConfigPath, "count", len(wildcardCerts))
+	}
+
 	st, err := store.NewJSONStore(*configDir)
 	if err != nil {
 		slog.Error("Failed to initialize store", "error", err)
@@ -83,13 +99,14 @@ func main() {
 	}
 
 	nm := nginx.NewManager(*configDir, nginx.Options{
-		NginxConf:  *nginxConf,
-		NginxBin:   *nginxBin,
-		CertsDir:   *certsDir,
-		WebrootDir: *webrootDir,
-		StaticDir:  *webrootDir + "/static",
-		LogsDir:    *logsDir,
-		PIDFile:    *nginxPid,
+		NginxConf:     *nginxConf,
+		NginxBin:      *nginxBin,
+		CertsDir:      *certsDir,
+		WebrootDir:    *webrootDir,
+		StaticDir:     *webrootDir + "/static",
+		LogsDir:       *logsDir,
+		PIDFile:       *nginxPid,
+		WildcardCerts: wildcardCerts,
 	})
 	if err := nm.EnsureDirs(); err != nil {
 		slog.Error("Failed to create nginx dirs", "error", err)
@@ -117,4 +134,50 @@ func main() {
 		slog.Error("Server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+type wildcardCertConfig struct {
+	Wildcards []nginx.WildcardCertificate `json:"wildcards"`
+}
+
+func loadWildcardCertsConfig(path string) ([]nginx.WildcardCertificate, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(string(content)) == "" {
+		return nil, nil
+	}
+
+	var wrapped wildcardCertConfig
+	if err := json.Unmarshal(content, &wrapped); err == nil && len(wrapped.Wildcards) > 0 {
+		return validateWildcardCerts(wrapped.Wildcards)
+	}
+
+	var direct []nginx.WildcardCertificate
+	if err := json.Unmarshal(content, &direct); err == nil {
+		return validateWildcardCerts(direct)
+	}
+
+	return nil, fmt.Errorf("invalid wildcard certificate config JSON in %s", path)
+}
+
+func validateWildcardCerts(entries []nginx.WildcardCertificate) ([]nginx.WildcardCertificate, error) {
+	valid := make([]nginx.WildcardCertificate, 0, len(entries))
+	for i, entry := range entries {
+		if strings.TrimSpace(entry.Domain) == "" && strings.TrimSpace(entry.DomainSuffix) == "" {
+			return nil, fmt.Errorf("wildcards[%d]: domain or domain_suffix is required", i)
+		}
+		if strings.TrimSpace(entry.CertPath) == "" {
+			return nil, fmt.Errorf("wildcards[%d]: cert_path is required", i)
+		}
+		if strings.TrimSpace(entry.KeyPath) == "" {
+			return nil, fmt.Errorf("wildcards[%d]: key_path is required", i)
+		}
+		valid = append(valid, entry)
+	}
+	return valid, nil
 }

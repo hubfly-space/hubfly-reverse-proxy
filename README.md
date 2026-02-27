@@ -167,6 +167,33 @@ See all configured sites and their status.
 curl http://localhost:81/v1/sites
 ```
 
+### Wildcard Certificate Mapping (Optional)
+If you already have wildcard certificates (for example `*.eu1.hubfly.app`), Hubfly can use them directly and skip Certbot issuance for matching domains.
+
+Default config path:
+- `/etc/letsencrypt/wildcards/config.json` (auto-loaded when present)
+
+Optional startup flag:
+- `-wildcard-certs-config /path/to/config.json`
+
+Example `config.json`:
+```json
+{
+  "wildcards": [
+    {
+      "domain": "eu1.hubfly.app",
+      "cert_path": "wildcards/eu1/fullchain.pem",
+      "key_path": "wildcards/eu1/privkey.pem"
+    }
+  ]
+}
+```
+
+Notes:
+- `domain` matches both exact host and subdomains (e.g. `testing.eu1.hubfly.app`).
+- Relative `cert_path` and `key_path` are resolved under `-certs-dir` (default `/etc/letsencrypt`).
+- API request/response payloads for sites remain unchanged.
+
 ### 5. Get Site Details
 View configuration for a specific site.
 ```bash

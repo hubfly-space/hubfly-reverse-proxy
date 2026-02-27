@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,6 +37,9 @@ var certRetrySchedule = []time.Duration{
 
 const certRetrySweepInterval = 30 * time.Second
 const upstreamSyncInterval = 1 * time.Hour
+const maxLoggedBodyBytes = 32 * 1024
+
+type requestIDContextKey struct{}
 
 type Server struct {
 	Store      store.Store
@@ -125,6 +129,12 @@ func (s *Server) Routes() http.Handler {
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		requestID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if requestID == "" {
+			requestID = generateRequestID()
+		}
+		r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, requestID))
+		w.Header().Set("X-Request-ID", requestID)
 
 		// Read body for logging if present
 		var bodyBytes []byte
@@ -133,22 +143,28 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore body
 		}
 
-		slog.Debug("API Request",
+		slog.Info("api_request_received",
+			"request_id", requestID,
 			"method", r.Method,
 			"path", r.URL.Path,
+			"query", r.URL.RawQuery,
 			"remote", r.RemoteAddr,
-			"body", string(bodyBytes),
+			"user_agent", r.UserAgent(),
+			"body", truncateForLog(bodyBytes, maxLoggedBodyBytes),
 		)
 
 		// Wrap ResponseWriter to capture status code
-		rw := &responseWriter{ResponseWriter: w, status: 200}
+		rw := &responseWriter{ResponseWriter: w, status: http.StatusOK, maxBodyBytes: maxLoggedBodyBytes}
 		next.ServeHTTP(rw, r)
 
 		duration := time.Since(start)
-		slog.Info("API Response",
+		slog.Info("api_request_completed",
+			"request_id", requestID,
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rw.status,
+			"response_body", rw.body.String(),
+			"response_bytes", rw.bytes,
 			"duration", duration,
 		)
 	})
@@ -156,12 +172,48 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 type responseWriter struct {
 	http.ResponseWriter
-	status int
+	status       int
+	bytes        int
+	body         bytes.Buffer
+	maxBodyBytes int
 }
 
 func (rw *responseWriter) WriteHeader(code int) {
 	rw.status = code
 	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseWriter) Write(p []byte) (int, error) {
+	remaining := rw.maxBodyBytes - rw.body.Len()
+	if remaining > 0 {
+		if len(p) <= remaining {
+			rw.body.Write(p)
+		} else {
+			rw.body.Write(p[:remaining])
+		}
+	}
+	n, err := rw.ResponseWriter.Write(p)
+	rw.bytes += n
+	return n, err
+}
+
+func requestIDFromContext(ctx context.Context) string {
+	v := ctx.Value(requestIDContextKey{})
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func generateRequestID() string {
+	return fmt.Sprintf("req-%d-%d", time.Now().UnixNano(), rand.Int63())
+}
+
+func truncateForLog(data []byte, max int) string {
+	if len(data) <= max {
+		return string(data)
+	}
+	return fmt.Sprintf("%s...[truncated %d bytes]", string(data[:max]), len(data)-max)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -333,6 +385,14 @@ func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, 400, "invalid json")
 			return
 		}
+		slog.Info("stream_create_requested",
+			"request_id", requestIDFromContext(r.Context()),
+			"stream_id", strings.TrimSpace(req.ID),
+			"listen_port", req.ListenPort,
+			"upstream", req.Upstream,
+			"protocol", req.Protocol,
+			"domain", req.Domain,
+		)
 
 		normalizedUpstream, err := normalizeStreamUpstream(req.Upstream, req.ContainerPort)
 		if err != nil {
@@ -398,6 +458,14 @@ func (s *Server) handleStreams(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, 500, err.Error())
 			return
 		}
+		slog.Info("stream_create_accepted",
+			"request_id", requestIDFromContext(r.Context()),
+			"stream_id", stream.ID,
+			"listen_port", stream.ListenPort,
+			"upstream", stream.Upstream,
+			"container_name", stream.ContainerName,
+			"container_network", stream.ContainerNetwork,
+		)
 
 		streamCopy := stream
 		go s.provisionStream(&streamCopy)
@@ -436,6 +504,11 @@ func (s *Server) handleStreamDetail(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, 500, err.Error())
 			return
 		}
+		slog.Info("stream_delete_accepted",
+			"request_id", requestIDFromContext(r.Context()),
+			"stream_id", id,
+			"listen_port", port,
+		)
 
 		// Reconcile Nginx Config for this port
 		go s.reconcileStreams(port)
@@ -874,13 +947,17 @@ func (s *Server) clearCertRetryState(siteID string) {
 }
 
 func (s *Server) issueCertificate(domain string) error {
+	slog.Info("certificate_issue_started", "domain", domain)
 	if err := s.Certbot.Issue(domain); err != nil {
+		slog.Error("certificate_issue_failed", "domain", domain, "error", err)
 		return err
 	}
 
 	if !s.Nginx.HasDomainCertificate(domain) {
+		slog.Error("certificate_issue_verification_failed", "domain", domain)
 		return fmt.Errorf("certificate files missing after issuance for domain %s", domain)
 	}
+	slog.Info("certificate_issue_succeeded", "domain", domain)
 
 	return nil
 }
@@ -927,6 +1004,14 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, 400, "invalid json")
 			return
 		}
+		slog.Info("site_create_requested",
+			"request_id", requestIDFromContext(r.Context()),
+			"site_id", site.ID,
+			"domain", site.Domain,
+			"ssl", site.SSL,
+			"force_ssl", site.ForceSSL,
+			"upstreams", site.Upstreams,
+		)
 		normalizedUpstreams, containers, networks, err := s.normalizeSiteUpstreams(site.Upstreams)
 		if err != nil {
 			errorResponse(w, 400, err.Error())
@@ -955,6 +1040,15 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, 500, err.Error())
 			return
 		}
+		slog.Info("site_create_accepted",
+			"request_id", requestIDFromContext(r.Context()),
+			"site_id", site.ID,
+			"domain", site.Domain,
+			"ssl", site.SSL,
+			"upstreams", site.Upstreams,
+			"upstream_containers", site.UpstreamContainers,
+			"upstream_networks", site.UpstreamNetworks,
+		)
 
 		// Apply Nginx Config (async)
 		// We pass a copy to avoid race with jsonResponse which reads 'site'
@@ -1026,6 +1120,12 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, 500, err.Error())
 			return
 		}
+		slog.Info("site_delete_completed",
+			"request_id", requestIDFromContext(r.Context()),
+			"site_id", id,
+			"domain", site.Domain,
+			"revoke_cert", revoke,
+		)
 		jsonResponse(w, 200, map[string]string{"status": "deleted"})
 	case http.MethodPatch:
 		// Decode partial update
@@ -1117,6 +1217,17 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, 500, err.Error())
 			return
 		}
+		slog.Info("site_patch_accepted",
+			"request_id", requestIDFromContext(r.Context()),
+			"site_id", site.ID,
+			"domain", site.Domain,
+			"ssl", site.SSL,
+			"force_ssl", site.ForceSSL,
+			"needs_full_provision", needsFullProvision,
+			"upstreams", site.Upstreams,
+			"upstream_containers", site.UpstreamContainers,
+			"upstream_networks", site.UpstreamNetworks,
+		)
 
 		siteCopy := *site
 		if needsFullProvision {
@@ -1276,12 +1387,25 @@ func (s *Server) provisionSite(site *models.Site) {
 func (s *Server) updateStatus(id, status, msg string) {
 	site, err := s.Store.GetSite(id)
 	if err != nil {
+		slog.Warn("site_status_update_skipped_site_missing", "site_id", id, "status", status, "error", err)
 		return
 	}
+	prevStatus := site.Status
+	prevMsg := site.ErrorMessage
 	site.Status = status
 	site.ErrorMessage = msg
 	site.UpdatedAt = time.Now()
-	s.Store.SaveSite(site)
+	if err := s.Store.SaveSite(site); err != nil {
+		slog.Error("site_status_update_failed", "site_id", id, "status", status, "error", err)
+		return
+	}
+	slog.Info("site_status_updated",
+		"site_id", id,
+		"previous_status", prevStatus,
+		"new_status", status,
+		"previous_error_message", prevMsg,
+		"new_error_message", msg,
+	)
 }
 
 func jsonResponse(w http.ResponseWriter, code int, data interface{}) {
@@ -1382,6 +1506,11 @@ func (s *Server) handleSiteCertRetry(w http.ResponseWriter, r *http.Request, sit
 		errorResponse(w, 500, "failed to persist retry state: "+err.Error())
 		return
 	}
+	slog.Info("manual_cert_retry_requested",
+		"request_id", requestIDFromContext(r.Context()),
+		"site_id", site.ID,
+		"domain", site.Domain,
+	)
 
 	siteIDCopy := site.ID
 	go func() {
@@ -1457,6 +1586,7 @@ func (s *Server) handleManualReload(w http.ResponseWriter, r *http.Request) {
 
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
+	slog.Info("manual_reload_requested", "request_id", requestIDFromContext(r.Context()))
 
 	if err := s.Nginx.Reload(); err != nil {
 		errorResponse(w, 500, "reload failed: "+err.Error())
@@ -1480,6 +1610,7 @@ func (s *Server) handleManualFullCheckReload(w http.ResponseWriter, r *http.Requ
 
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
+	slog.Info("manual_full_check_requested", "request_id", requestIDFromContext(r.Context()))
 
 	reloaded, siteCount, streamCount, err := s.syncUpstreamsAndRefreshLocked(true)
 	if err != nil {

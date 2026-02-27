@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"path"
@@ -67,8 +68,10 @@ func (c *Client) Health() Health {
 }
 
 func (c *Client) Version() (*versionResponse, error) {
+	slog.Debug("docker_version_request_started", "socket_path", c.SocketPath)
 	body, err := c.get("/version")
 	if err != nil {
+		slog.Warn("docker_version_request_failed", "socket_path", c.SocketPath, "error", err)
 		return nil, err
 	}
 	defer body.Close()
@@ -77,6 +80,7 @@ func (c *Client) Version() (*versionResponse, error) {
 	if err := json.NewDecoder(body).Decode(&v); err != nil {
 		return nil, fmt.Errorf("failed to parse docker version response: %w", err)
 	}
+	slog.Debug("docker_version_request_succeeded", "api_version", v.APIVersion, "engine_version", v.Version)
 	return &v, nil
 }
 
@@ -93,8 +97,10 @@ func (c *Client) ResolveContainerIP(container string) (string, error) {
 }
 
 func (c *Client) ResolveContainerIPs(container string) (map[string]string, error) {
+	slog.Info("docker_resolve_container_ips_started", "container", container)
 	body, err := c.get(path.Join("/containers", container, "json"))
 	if err != nil {
+		slog.Warn("docker_resolve_container_ips_failed", "container", container, "error", err)
 		return nil, err
 	}
 	defer body.Close()
@@ -114,6 +120,7 @@ func (c *Client) ResolveContainerIPs(container string) (map[string]string, error
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no container IP found for %s", container)
 	}
+	slog.Info("docker_resolve_container_ips_succeeded", "container", container, "networks", out)
 	return out, nil
 }
 
@@ -143,6 +150,7 @@ func PickIPFromNetworks(networkIPs map[string]string, preferredNetwork string, f
 }
 
 func (c *Client) get(endpoint string) (io.ReadCloser, error) {
+	start := time.Now()
 	req, err := http.NewRequest(http.MethodGet, "http://docker"+endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -150,13 +158,16 @@ func (c *Client) get(endpoint string) (io.ReadCloser, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		slog.Warn("docker_request_failed", "endpoint", endpoint, "duration", time.Since(start), "error", err)
 		return nil, fmt.Errorf("docker engine request failed: %w", err)
 	}
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		slog.Warn("docker_request_non_success", "endpoint", endpoint, "status", resp.StatusCode, "duration", time.Since(start), "body", strings.TrimSpace(string(body)))
 		return nil, fmt.Errorf("docker engine request failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
+	slog.Debug("docker_request_succeeded", "endpoint", endpoint, "status", resp.StatusCode, "duration", time.Since(start))
 
 	return resp.Body, nil
 }

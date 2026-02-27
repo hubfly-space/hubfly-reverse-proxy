@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type Manager struct {
@@ -106,17 +107,20 @@ func (m *Manager) Issue(domain string) error {
 		"-m", m.Email,
 	}
 
-	slog.Info("Running certbot issue", "domain", domain, "command", path, "args", args)
+	slog.Info("certbot_issue_started", "domain", domain, "command", path, "args", args, "webroot", m.Webroot)
 
 	cmd := exec.Command(path, args...)
+	start := time.Now()
 	out, err := cmd.CombinedOutput()
+	duration := time.Since(start)
 
-	slog.Debug("Certbot output", "domain", domain, "output", string(out))
+	slog.Info("certbot_issue_output", "domain", domain, "duration", duration, "output", string(out))
 
 	if err != nil {
-		slog.Error("Certbot issue failed", "domain", domain, "error", err, "output", string(out))
+		slog.Error("certbot_issue_failed", "domain", domain, "error", err, "duration", duration, "output", string(out))
 		return fmt.Errorf("certbot failed: %s, output: %s", err, string(out))
 	}
+	slog.Info("certbot_issue_succeeded", "domain", domain, "duration", duration)
 	return nil
 }
 
@@ -128,16 +132,19 @@ func (m *Manager) Revoke(domain string) error {
 		return err
 	}
 
-	slog.Info("Running certbot revoke", "domain", domain, "cert_path", certPath)
+	slog.Info("certbot_revoke_started", "domain", domain, "cert_path", certPath)
 
 	cmd := exec.Command(path, "revoke", "--cert-path", certPath, "--reason", "unspecified", "--non-interactive")
+	start := time.Now()
 	out, err := cmd.CombinedOutput()
+	duration := time.Since(start)
 
-	slog.Debug("Certbot revoke output", "domain", domain, "output", string(out))
+	slog.Info("certbot_revoke_output", "domain", domain, "duration", duration, "output", string(out))
 
 	if err != nil {
-		slog.Error("Certbot revoke failed", "domain", domain, "error", err, "output", string(out))
+		slog.Error("certbot_revoke_failed", "domain", domain, "error", err, "duration", duration, "output", string(out))
 		return fmt.Errorf("certbot revoke failed: %s, output: %s", err, string(out))
 	}
+	slog.Info("certbot_revoke_succeeded", "domain", domain, "duration", duration)
 	return nil
 }

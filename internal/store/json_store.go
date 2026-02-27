@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -46,6 +47,7 @@ func NewJSONStore(dir string) (*JSONStore, error) {
 	if err := s.load(); err != nil {
 		return nil, err
 	}
+	slog.Info("json_store_initialized", "dir", dir, "sites_file", s.sitesFilePath, "streams_file", s.streamsFilePath)
 	return s, nil
 }
 
@@ -118,7 +120,12 @@ func (s *JSONStore) SaveSite(site *models.Site) error {
 	defer s.mu.Unlock()
 
 	s.sites[site.ID] = *site
-	return s.saveSites()
+	if err := s.saveSites(); err != nil {
+		slog.Error("json_store_save_site_failed", "site_id", site.ID, "error", err)
+		return err
+	}
+	slog.Info("json_store_save_site_succeeded", "site_id", site.ID, "domain", site.Domain, "status", site.Status)
+	return nil
 }
 
 func (s *JSONStore) DeleteSite(id string) error {
@@ -126,7 +133,12 @@ func (s *JSONStore) DeleteSite(id string) error {
 	defer s.mu.Unlock()
 
 	delete(s.sites, id)
-	return s.saveSites()
+	if err := s.saveSites(); err != nil {
+		slog.Error("json_store_delete_site_failed", "site_id", id, "error", err)
+		return err
+	}
+	slog.Info("json_store_delete_site_succeeded", "site_id", id)
+	return nil
 }
 
 // Stream Methods
@@ -156,7 +168,12 @@ func (s *JSONStore) SaveStream(stream *models.Stream) error {
 	defer s.mu.Unlock()
 
 	s.streams[stream.ID] = *stream
-	return s.saveStreams()
+	if err := s.saveStreams(); err != nil {
+		slog.Error("json_store_save_stream_failed", "stream_id", stream.ID, "error", err)
+		return err
+	}
+	slog.Info("json_store_save_stream_succeeded", "stream_id", stream.ID, "listen_port", stream.ListenPort, "status", stream.Status)
+	return nil
 }
 
 func (s *JSONStore) DeleteStream(id string) error {
@@ -164,7 +181,12 @@ func (s *JSONStore) DeleteStream(id string) error {
 	defer s.mu.Unlock()
 
 	delete(s.streams, id)
-	return s.saveStreams()
+	if err := s.saveStreams(); err != nil {
+		slog.Error("json_store_delete_stream_failed", "stream_id", id, "error", err)
+		return err
+	}
+	slog.Info("json_store_delete_stream_succeeded", "stream_id", id)
+	return nil
 }
 
 // saveAtomic is removed as it is no longer needed.

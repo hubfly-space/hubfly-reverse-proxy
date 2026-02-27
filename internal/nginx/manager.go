@@ -660,13 +660,16 @@ func (m *Manager) runConfigTest() error {
 		return nil
 	}
 
+	slog.Info("nginx_config_test_started", "command", path, "nginx_conf", m.NginxConf)
 	cmd := exec.Command(path, "-t", "-c", m.NginxConf)
+	start := time.Now()
 	out, err := cmd.CombinedOutput()
+	duration := time.Since(start)
 	if err != nil {
-		slog.Error("Nginx config test failed", "error", err, "output", string(out))
+		slog.Error("nginx_config_test_failed", "error", err, "duration", duration, "output", string(out))
 		return fmt.Errorf("nginx config test failed: %s, output: %s", err, string(out))
 	}
-	slog.Debug("Nginx config test success", "output", string(out))
+	slog.Info("nginx_config_test_succeeded", "duration", duration, "output", string(out))
 	return nil
 }
 
@@ -733,18 +736,21 @@ func (m *Manager) Reload() error {
 		slog.Warn("Nginx not found, skipping reload")
 		return nil // Skip if no nginx
 	}
-	slog.Info("Reloading Nginx")
+	slog.Info("nginx_reload_started", "command", path, "pid_file", m.PIDFile)
 	cmd := exec.Command(path, "-s", "reload")
+	start := time.Now()
 	out, err := cmd.CombinedOutput()
+	duration := time.Since(start)
 	if err != nil {
-		slog.Warn("Nginx reload failed, attempting restart", "error", err, "output", string(out))
+		slog.Warn("nginx_reload_failed_attempting_restart", "error", err, "duration", duration, "output", string(out))
 		if startErr := m.EnsureRunning(); startErr != nil {
-			slog.Error("Nginx restart failed after reload failure", "reload_error", err, "start_error", startErr)
+			slog.Error("nginx_restart_failed_after_reload_failure", "reload_error", err, "start_error", startErr)
 			return fmt.Errorf("nginx reload failed: %s, output: %s", err, string(out))
 		}
+		slog.Info("nginx_restart_succeeded_after_reload_failure")
 		return nil
 	}
-	slog.Debug("Nginx reload success", "output", string(out))
+	slog.Info("nginx_reload_succeeded", "duration", duration, "output", string(out))
 	if err := m.EnsureRunning(); err != nil {
 		return err
 	}
@@ -815,6 +821,7 @@ func (m *Manager) EnsureRunning() error {
 		return err
 	}
 	if running {
+		slog.Debug("nginx_already_running")
 		return nil
 	}
 
@@ -828,11 +835,16 @@ func (m *Manager) EnsureRunning() error {
 	}
 
 	args := []string{"-c", m.NginxConf, "-g", fmt.Sprintf("pid %s;", m.PIDFile)}
+	slog.Info("nginx_start_started", "command", path, "args", args)
 	cmd := exec.Command(path, args...)
+	start := time.Now()
 	out, err := cmd.CombinedOutput()
+	duration := time.Since(start)
 	if err != nil {
+		slog.Error("nginx_start_failed", "error", err, "duration", duration, "output", string(out))
 		return fmt.Errorf("nginx start failed: %s, output: %s", err, string(out))
 	}
+	slog.Info("nginx_start_command_succeeded", "duration", duration, "output", string(out))
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -842,6 +854,7 @@ func (m *Manager) EnsureRunning() error {
 			return nil
 		}
 	}
+	slog.Error("nginx_start_health_check_timeout")
 	return fmt.Errorf("nginx did not become running after start")
 }
 
@@ -851,11 +864,22 @@ func (m *Manager) Restart() error {
 		return err
 	}
 
+	slog.Info("nginx_restart_started", "command", path)
 	cmd := exec.Command(path, "-s", "quit")
-	_, _ = cmd.CombinedOutput()
+	quitOut, quitErr := cmd.CombinedOutput()
+	if quitErr != nil {
+		slog.Warn("nginx_quit_before_restart_failed", "error", quitErr, "output", string(quitOut))
+	} else {
+		slog.Info("nginx_quit_before_restart_succeeded", "output", string(quitOut))
+	}
 
 	time.Sleep(500 * time.Millisecond)
-	return m.EnsureRunning()
+	if err := m.EnsureRunning(); err != nil {
+		slog.Error("nginx_restart_failed", "error", err)
+		return err
+	}
+	slog.Info("nginx_restart_succeeded")
+	return nil
 }
 
 func (m *Manager) Health() Health {

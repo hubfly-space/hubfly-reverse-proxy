@@ -15,7 +15,13 @@ Default in-container paths remain:
 - Certificates: `/etc/letsencrypt`
 - Webroot: `/var/www/hubfly`
 - Logs: `/var/log/hubfly`
+- Go app logs: `/var/log/hubfly-go`
 - NGINX config: `/etc/nginx/nginx.conf`
+
+Go app logging:
+- Structured JSON logs are written hourly to `/var/log/hubfly-go/hubfly-go-YYYYMMDD-HH.log`.
+- Default retention is `1h` with periodic cleanup.
+- Retention is configurable via `--app-log-retention` (Go duration format).
 
 State files:
 - Sites: `/etc/hubfly/sites.json`

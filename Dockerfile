@@ -27,7 +27,7 @@ RUN chmod +x /start.sh
 
 # Create necessary directories
 RUN mkdir -p /etc/hubfly/sites /etc/hubfly/streams /etc/hubfly/staging /etc/hubfly/templates \
-    /var/www/hubfly /var/log/hubfly /var/cache/nginx
+    /var/www/hubfly /var/log/hubfly /var/log/hubfly-go /var/cache/nginx
 
 # Copy templates
 COPY ./templates /etc/hubfly/templates
@@ -37,7 +37,7 @@ COPY ./static /var/www/hubfly/static
 EXPOSE 80 443 81 82 30000-30100
 
 # Volume for persistence
-VOLUME ["/etc/letsencrypt", "/etc/hubfly", "/var/www/hubfly"]
+VOLUME ["/etc/letsencrypt", "/etc/hubfly", "/var/www/hubfly", "/var/log/hubfly-go"]
 
 # Entrypoint
 CMD ["/start.sh"]

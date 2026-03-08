@@ -9,4 +9,4 @@
 - [x] Replace Docker deploy workflow with tag-based release zip workflow.
 - [x] Remove Docker-related files no longer needed.
 - [x] Update README to host-native runtime and release usage.
-- [ ] Run tests/build and commit in logical steps.
+- [x] Run tests/build and commit in logical steps.

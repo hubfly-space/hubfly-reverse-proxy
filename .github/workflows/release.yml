@@ -1,0 +1,52 @@
+name: Build And Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build Binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          BUILD_TIME: ${{ github.event.head_commit.timestamp }}
+        run: |
+          set -euxo pipefail
+          mkdir -p dist/package/bin
+          GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-X main.appVersion=${VERSION} -X main.gitCommit=${COMMIT} -X main.buildTime=${BUILD_TIME}" \
+            -o dist/package/bin/hubfly ./cmd/hubfly
+          GOOS=linux GOARCH=amd64 go build \
+            -o dist/package/bin/migrate-json-to-sqlite ./cmd/migrate-json-to-sqlite
+
+      - name: Prepare Package
+        run: |
+          set -euxo pipefail
+          cp -r nginx dist/package/nginx
+          cp -r templates dist/package/templates
+          cp -r static dist/package/static
+          cp scripts/migrate_json_to_sqlite.sh dist/package/
+          cp README.md dist/package/
+          mkdir -p dist/package/data/http dist/package/data/tcp dist/package/logs/runtime dist/package/logs/nginx dist/package/certbot/{config,work,logs}
+          cd dist
+          zip -r hubfly-${{ github.ref_name }}-linux-amd64.zip package
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/hubfly-${{ github.ref_name }}-linux-amd64.zip

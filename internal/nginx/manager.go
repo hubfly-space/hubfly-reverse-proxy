@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -145,12 +146,16 @@ func (m *Manager) EnsureDirs() error {
 		m.WebrootDir,
 		m.StaticDir,
 		m.LogsDir,
+		filepath.Join(filepath.Dir(m.LogsDir), "cache", "nginx"),
 		filepath.Dir(m.PIDFile),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			return err
 		}
+	}
+	if err := m.ensureMainConfigPaths(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -920,9 +925,14 @@ func (m *Manager) EnsureRunning() error {
 		return err
 	}
 
-	// If another nginx is running outside Hubfly PID tracking, stop it first.
+	// Validate Hubfly config before touching unmanaged host nginx.
+	if err := m.testMainConfig(path); err != nil {
+		return err
+	}
+
+	// If another nginx is running outside Hubfly PID tracking, stop it only after config validates.
 	if err := m.stopUnmanagedNginx(path); err != nil {
-		slog.Warn("failed_to_stop_unmanaged_nginx_before_start", "error", err)
+		return err
 	}
 
 	args, err := m.startArgs()
@@ -956,6 +966,63 @@ func (m *Manager) EnsureRunning() error {
 	slog.Info("nginx_start_command_succeeded", "duration", duration, "output", string(out))
 
 	return m.waitForRunning()
+}
+
+func (m *Manager) ensureMainConfigPaths() error {
+	content, err := os.ReadFile(m.NginxConf)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Test harnesses may only exercise generated site/stream files and skip main nginx.conf.
+			return nil
+		}
+		return fmt.Errorf("failed to read nginx config %s: %w", m.NginxConf, err)
+	}
+	updated := string(content)
+
+	// Host-agnostic defaults from legacy config.
+	updated = strings.ReplaceAll(updated, "/etc/hubfly/sites/*.conf", filepath.ToSlash(filepath.Join(m.SitesDir, "*.conf")))
+	updated = strings.ReplaceAll(updated, "/etc/hubfly/streams/*.conf", filepath.ToSlash(filepath.Join(m.StreamsDir, "*.conf")))
+	updated = strings.ReplaceAll(updated, "/var/www/hubfly/static", filepath.ToSlash(m.StaticDir))
+	updated = strings.ReplaceAll(updated, "/var/log/hubfly/access.log", filepath.ToSlash(filepath.Join(m.LogsDir, "access.log")))
+	updated = strings.ReplaceAll(updated, "/var/cache/nginx", filepath.ToSlash(filepath.Join(filepath.Dir(m.LogsDir), "cache", "nginx")))
+
+	// Ensure PID file points to hubfly-managed runtime path.
+	pidPattern := regexp.MustCompile(`(?m)^\s*pid\s+[^;]+;\s*$`)
+	if pidPattern.MatchString(updated) {
+		updated = pidPattern.ReplaceAllString(updated, fmt.Sprintf("pid %s;", filepath.ToSlash(m.PIDFile)))
+	} else {
+		updated = fmt.Sprintf("pid %s;\n%s", filepath.ToSlash(m.PIDFile), updated)
+	}
+
+	// Make error log file local to runtime folder.
+	errLogPattern := regexp.MustCompile(`(?m)^\s*error_log\s+[^;]+;\s*$`)
+	errorLogPath := filepath.ToSlash(filepath.Join(m.LogsDir, "nginx.error.log"))
+	if errLogPattern.MatchString(updated) {
+		updated = errLogPattern.ReplaceAllString(updated, fmt.Sprintf("error_log %s notice;", errorLogPath))
+	} else {
+		updated = fmt.Sprintf("error_log %s notice;\n%s", errorLogPath, updated)
+	}
+
+	// Remove distro-specific nginx user directive to avoid startup failures on hosts without that user.
+	userPattern := regexp.MustCompile(`(?m)^\s*user\s+[^;]+;\s*$`)
+	updated = userPattern.ReplaceAllString(updated, "# user directive managed by host defaults")
+
+	if updated == string(content) {
+		return nil
+	}
+	if err := os.WriteFile(m.NginxConf, []byte(updated), 0644); err != nil {
+		return fmt.Errorf("failed to update nginx runtime config %s: %w", m.NginxConf, err)
+	}
+	return nil
+}
+
+func (m *Manager) testMainConfig(path string) error {
+	cmd := exec.Command(path, "-t", "-c", m.NginxConf)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("nginx config validation failed: %s", strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func (m *Manager) configHasPIDDirective() (bool, error) {

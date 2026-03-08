@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1006,9 +1007,17 @@ func (m *Manager) ensureMainConfigPaths() error {
 		updated = fmt.Sprintf("error_log %s notice;\n%s", errorLogPath, updated)
 	}
 
-	// Remove distro-specific nginx user directive to avoid startup failures on hosts without that user.
+	// Set worker user to runtime user so paths under /home/<user> remain accessible.
+	runtimeUser := discoverRuntimeUser(m.NginxConf)
 	userPattern := regexp.MustCompile(`(?m)^\s*user\s+[^;]+;\s*$`)
-	updated = userPattern.ReplaceAllString(updated, "# user directive managed by host defaults")
+	if runtimeUser != "" {
+		updated = userPattern.ReplaceAllString(updated, fmt.Sprintf("user %s;", runtimeUser))
+		if !userPattern.MatchString(updated) {
+			updated = fmt.Sprintf("user %s;\n%s", runtimeUser, updated)
+		}
+	} else {
+		updated = userPattern.ReplaceAllString(updated, "# user directive managed by host defaults")
+	}
 
 	if updated == string(content) {
 		return nil
@@ -1251,6 +1260,28 @@ func isNginxWorkerPID(pid int) bool {
 	cmdline := strings.ReplaceAll(string(b), "\x00", " ")
 	cmdline = strings.ToLower(strings.TrimSpace(cmdline))
 	return strings.Contains(cmdline, "worker process")
+}
+
+func discoverRuntimeUser(pathHint string) string {
+	if sudoUser := strings.TrimSpace(os.Getenv("SUDO_USER")); sudoUser != "" {
+		if _, err := user.Lookup(sudoUser); err == nil {
+			return sudoUser
+		}
+	}
+
+	stat, err := os.Stat(pathHint)
+	if err != nil {
+		return ""
+	}
+	sys, ok := stat.Sys().(*syscall.Stat_t)
+	if !ok {
+		return ""
+	}
+	u, err := user.LookupId(strconv.FormatUint(uint64(sys.Uid), 10))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(u.Username)
 }
 
 func (m *Manager) Restart() error {

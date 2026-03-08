@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -158,6 +159,10 @@ func main() {
 		slog.Error("Failed to create nginx dirs", "error", err)
 		os.Exit(1)
 	}
+	if err := copyStaticAssets(filepath.Join(baseDir, "static"), filepath.Join(*webrootDir, "static")); err != nil {
+		slog.Error("Failed to sync static assets", "error", err)
+		os.Exit(1)
+	}
 
 	if err := nm.EnsureRunning(); err != nil {
 		slog.Warn("Nginx is not running at startup", "error", err)
@@ -205,6 +210,50 @@ func logStartupHealth(version, commit, built string, nm *nginx.Manager, cm *cert
 		"certbot_version", certbotHealth.Version,
 		"certbot_error", certbotHealth.Error,
 	)
+}
+
+func copyStaticAssets(srcDir, dstDir string) error {
+	info, err := os.Stat(srcDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return err
+	}
+
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dstDir, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		src, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer src.Close()
+		dst, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			return err
+		}
+		defer dst.Close()
+		if _, err := io.Copy(dst, src); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 type wildcardCertConfig struct {

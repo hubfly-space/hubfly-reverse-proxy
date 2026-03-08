@@ -40,8 +40,6 @@ jobs:
           cp -r nginx dist/package/nginx
           cp -r templates dist/package/templates
           cp -r static dist/package/static
-          cp scripts/migrate_json_to_sqlite.sh dist/package/
-          cp README.md dist/package/
           mkdir -p dist/package/data/http dist/package/data/tcp dist/package/logs/runtime dist/package/logs/nginx dist/package/certbot/{config,work,logs}
           cd dist
           zip -r hubfly-${{ github.ref_name }}-linux-amd64.zip package

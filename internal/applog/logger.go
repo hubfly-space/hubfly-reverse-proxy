@@ -23,34 +23,30 @@ type Options struct {
 	CleanupInterval time.Duration
 }
 
-type rotatingFileWriter struct {
-	mu       sync.Mutex
-	dir      string
-	prefix   string
-	current  string
-	file     *os.File
-	location *time.Location
+type bootFileWriter struct {
+	mu   sync.Mutex
+	path string
+	file *os.File
 }
 
-func newRotatingFileWriter(dir, prefix string) *rotatingFileWriter {
-	return &rotatingFileWriter{
-		dir:      dir,
-		prefix:   prefix,
-		location: time.UTC,
-	}
+func newBootFileWriter(path string) *bootFileWriter {
+	return &bootFileWriter{path: path}
 }
 
-func (w *rotatingFileWriter) Write(p []byte) (int, error) {
+func (w *bootFileWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
-	if err := w.rotateIfNeededLocked(time.Now()); err != nil {
-		return 0, err
+	if w.file == nil {
+		f, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return 0, err
+		}
+		w.file = f
 	}
 	return w.file.Write(p)
 }
 
-func (w *rotatingFileWriter) Close() error {
+func (w *bootFileWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.file != nil {
@@ -59,37 +55,6 @@ func (w *rotatingFileWriter) Close() error {
 		return err
 	}
 	return nil
-}
-
-func (w *rotatingFileWriter) rotateIfNeededLocked(now time.Time) error {
-	target := w.filenameFor(now)
-	if w.file != nil && target == w.current {
-		return nil
-	}
-
-	if w.file != nil {
-		_ = w.file.Close()
-		w.file = nil
-	}
-
-	f, err := os.OpenFile(target, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	w.file = f
-	w.current = target
-	return nil
-}
-
-func (w *rotatingFileWriter) currentFile() string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.current
-}
-
-func (w *rotatingFileWriter) filenameFor(now time.Time) string {
-	hourStamp := now.In(w.location).Format("20060102-15")
-	return filepath.Join(w.dir, fmt.Sprintf("%s-%s.log", w.prefix, hourStamp))
 }
 
 func Setup(opts Options) (func(), error) {
@@ -109,17 +74,16 @@ func Setup(opts Options) (func(), error) {
 		return nil, fmt.Errorf("failed to create log dir: %w", err)
 	}
 
-	writer := newRotatingFileWriter(opts.Dir, opts.Prefix)
-	if err := writer.rotateIfNeededLocked(time.Now()); err != nil {
-		return nil, fmt.Errorf("failed to initialize log file: %w", err)
-	}
+	bootStamp := time.Now().UTC().Format("20060102-150405")
+	bootLogFile := filepath.Join(opts.Dir, fmt.Sprintf("%s-%s.log", opts.Prefix, bootStamp))
+	writer := newBootFileWriter(bootLogFile)
 
 	handler := slog.NewJSONHandler(io.MultiWriter(os.Stdout, writer), &slog.HandlerOptions{
 		Level:     slog.LevelDebug,
 		AddSource: true,
 	})
 	slog.SetDefault(slog.New(handler))
-	cleanupOldFiles(opts.Dir, opts.Prefix, opts.Retention, writer)
+	cleanupOldFiles(opts.Dir, opts.Prefix, opts.Retention, bootLogFile)
 
 	stopCh := make(chan struct{})
 	var wg sync.WaitGroup
@@ -131,7 +95,7 @@ func Setup(opts Options) (func(), error) {
 		for {
 			select {
 			case <-ticker.C:
-				cleanupOldFiles(opts.Dir, opts.Prefix, opts.Retention, writer)
+				cleanupOldFiles(opts.Dir, opts.Prefix, opts.Retention, bootLogFile)
 			case <-stopCh:
 				return
 			}
@@ -148,7 +112,7 @@ func Setup(opts Options) (func(), error) {
 	return cleanup, nil
 }
 
-func cleanupOldFiles(dir, prefix string, retention time.Duration, writer *rotatingFileWriter) {
+func cleanupOldFiles(dir, prefix string, retention time.Duration, currentFile string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		slog.Warn("app log cleanup failed to read dir", "dir", dir, "error", err)
@@ -166,7 +130,7 @@ func cleanupOldFiles(dir, prefix string, retention time.Duration, writer *rotati
 			continue
 		}
 		path := filepath.Join(dir, name)
-		if path == writer.currentFile() {
+		if path == currentFile {
 			continue
 		}
 

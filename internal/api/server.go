@@ -116,6 +116,7 @@ func (s *Server) Bootstrap() {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", s.handleHealth)
+	mux.HandleFunc("/v1/management/version", s.handleManagementVersion)
 	mux.HandleFunc("/v1/sites", s.handleSites)           // GET, POST
 	mux.HandleFunc("/v1/sites/", s.handleSiteDetail)     // GET, DELETE, PATCH
 	mux.HandleFunc("/v1/streams", s.handleStreams)       // GET, POST
@@ -222,12 +223,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	nginxHealth := s.Nginx.Health()
 	certbotHealth := s.Certbot.Health()
-	dockerHealth := dockerengine.Health{Available: false}
+	dockerHealth := dockerengine.Health{Available: false, Error: "docker sync disabled"}
+	dockerRequired := s.Docker != nil
 	if s.Docker != nil {
 		dockerHealth = s.Docker.Health()
 	}
 	status := "ok"
-	if !nginxHealth.Available || !nginxHealth.Running || !certbotHealth.Available || !dockerHealth.Available {
+	if !nginxHealth.Available || !nginxHealth.Running || !certbotHealth.Available || (dockerRequired && !dockerHealth.Available) {
 		status = "degraded"
 	}
 
@@ -248,6 +250,37 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"store": map[string]interface{}{
 			"sites_count":   len(sites),
 			"streams_count": len(streams),
+		},
+	})
+}
+
+func (s *Server) handleManagementVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		errorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	nginxHealth := s.Nginx.Health()
+	certbotHealth := s.Certbot.Health()
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"service": map[string]interface{}{
+			"version":    s.BuildInfo.Version,
+			"commit":     s.BuildInfo.Commit,
+			"build_time": s.BuildInfo.BuildTime,
+			"go_version": runtime.Version(),
+		},
+		"tools": map[string]interface{}{
+			"nginx": map[string]interface{}{
+				"available": nginxHealth.Available,
+				"binary":    nginxHealth.Binary,
+				"version":   nginxHealth.Version,
+			},
+			"certbot": map[string]interface{}{
+				"available": certbotHealth.Available,
+				"binary":    certbotHealth.Binary,
+				"version":   certbotHealth.Version,
+			},
 		},
 	})
 }

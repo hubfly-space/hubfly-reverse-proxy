@@ -15,6 +15,8 @@ type Manager struct {
 	Email      string
 	BinaryPath string
 	CertsDir   string
+	WorkDir    string
+	LogsDir    string
 }
 
 type Health struct {
@@ -23,15 +25,19 @@ type Health struct {
 	Version   string `json:"version,omitempty"`
 	Webroot   string `json:"webroot"`
 	CertsDir  string `json:"certs_dir"`
+	WorkDir   string `json:"work_dir"`
+	LogsDir   string `json:"logs_dir"`
 	Error     string `json:"error,omitempty"`
 }
 
-func NewManager(webroot, email, binaryPath, certsDir string) *Manager {
+func NewManager(webroot, email, binaryPath, certsDir, workDir, logsDir string) *Manager {
 	return &Manager{
 		Webroot:    webroot,
 		Email:      email,
 		BinaryPath: strings.TrimSpace(binaryPath),
 		CertsDir:   certsDir,
+		WorkDir:    workDir,
+		LogsDir:    logsDir,
 	}
 }
 
@@ -72,6 +78,8 @@ func (m *Manager) Health() Health {
 	h := Health{
 		Webroot:  m.Webroot,
 		CertsDir: m.CertsDir,
+		WorkDir:  m.WorkDir,
+		LogsDir:  m.LogsDir,
 	}
 
 	path, err := m.resolveBinary()
@@ -99,6 +107,9 @@ func (m *Manager) Issue(domain string) error {
 
 	args := []string{
 		"certonly",
+		"--config-dir", m.CertsDir,
+		"--work-dir", m.WorkDir,
+		"--logs-dir", m.LogsDir,
 		"--webroot",
 		"-w", m.Webroot,
 		"-d", domain,
@@ -134,7 +145,16 @@ func (m *Manager) Revoke(domain string) error {
 
 	slog.Info("certbot_revoke_started", "domain", domain, "cert_path", certPath)
 
-	cmd := exec.Command(path, "revoke", "--cert-path", certPath, "--reason", "unspecified", "--non-interactive")
+	args := []string{
+		"revoke",
+		"--cert-path", certPath,
+		"--reason", "unspecified",
+		"--non-interactive",
+		"--config-dir", m.CertsDir,
+		"--work-dir", m.WorkDir,
+		"--logs-dir", m.LogsDir,
+	}
+	cmd := exec.Command(path, args...)
 	start := time.Now()
 	out, err := cmd.CombinedOutput()
 	duration := time.Since(start)

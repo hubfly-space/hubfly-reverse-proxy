@@ -27,20 +27,20 @@ jobs:
           BUILD_TIME: ${{ github.event.head_commit.timestamp }}
         run: |
           set -euxo pipefail
-          mkdir -p dist/package
+          mkdir -p dist/root
           GOOS=linux GOARCH=amd64 go build \
             -ldflags "-X main.appVersion=${VERSION} -X main.gitCommit=${COMMIT} -X main.buildTime=${BUILD_TIME}" \
-            -o dist/package/hubfly-reverse-proxy ./cmd/hubfly
+            -o dist/root/hubfly-reverse-proxy ./cmd/hubfly
 
       - name: Prepare Package
         run: |
           set -euxo pipefail
-          cp -r nginx dist/package/nginx
-          cp -r templates dist/package/templates
-          cp -r static dist/package/static
-          mkdir -p dist/package/data/http dist/package/data/tcp dist/package/logs/runtime dist/package/logs/nginx dist/package/certbot/{config,work,logs}
-          cd dist
-          zip -r hubfly-${{ github.ref_name }}-linux-amd64.zip package
+          cp -r nginx dist/root/nginx
+          cp -r templates dist/root/templates
+          cp -r static dist/root/static
+          mkdir -p dist/root/data/http dist/root/data/tcp dist/root/logs/runtime dist/root/logs/nginx dist/root/certbot/{config,work,logs}
+          cd dist/root
+          zip -r ../hubfly-${{ github.ref_name }}-linux-amd64.zip .
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

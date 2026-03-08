@@ -33,13 +33,13 @@ Default runtime paths are rooted in `-config-dir` (default `.`):
 Build metadata is injected at build time and shown by APIs.
 
 ```bash
-go build -ldflags "-X main.appVersion=v1.0.0 -X main.gitCommit=$(git rev-parse --short HEAD) -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o main ./cmd/hubfly
+go build -ldflags "-X main.appVersion=v1.0.0 -X main.gitCommit=$(git rev-parse --short HEAD) -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o hubfly-reverse-proxy ./cmd/hubfly
 ```
 
 Print binary version only:
 
 ```bash
-./main version
+./hubfly-reverse-proxy version
 ```
 
 Expected output (string only):
@@ -51,25 +51,24 @@ v1.0.0
 ## Run
 
 ```bash
-./main -config-dir . -port 81
+./hubfly-reverse-proxy -config-dir . -port 81
 ```
 
 With Docker upstream sync enabled:
 
 ```bash
-./main -config-dir . -port 81 -enable-docker-sync -docker-sock /var/run/docker.sock
+./hubfly-reverse-proxy -config-dir . -port 81 -enable-docker-sync -docker-sock /var/run/docker.sock
 ```
 
 ## Release
 
 Tag push like `v1.2.0` triggers `.github/workflows/release.yml`.
 It publishes a GitHub Release zip containing:
-- `bin/hubfly`
-- `bin/migrate-json-to-sqlite`
+- `hubfly-reverse-proxy` (archive root)
 - `nginx/`
 - `templates/`
 - `static/`
-- migration script and runtime folder skeleton
+- runtime folder skeleton (`data/`, `logs/`, `certbot/`)
 
 ## JSON to SQLite Migration
 
@@ -477,3 +476,40 @@ Notes:
 - `internal/store`: storage implementations
 - `internal/logmanager`: site log query helpers
 - `nginx/`, `templates/`, `static/`: runtime assets
+
+## Troubleshooting
+
+### 1. `curl 127.0.0.1` returns `403 Forbidden`
+
+Check runtime nginx error log:
+
+```bash
+tail -n 100 <config-dir>/logs/nginx/nginx.error.log
+```
+
+If you see `Permission denied` under `/home/<user>/...`, start Hubfly with `sudo`. Hubfly rewrites nginx worker `user` to the invoking runtime user (from `SUDO_USER`) so paths under your home directory are accessible.
+
+### 2. Existing nginx already running on host
+
+Hubfly takeover is now safe:
+- It validates Hubfly nginx config before takeover.
+- It ignores container-owned nginx processes.
+- It takes over only host nginx master processes.
+
+To verify what owns ports:
+
+```bash
+ss -ltnp | rg ':80|:443|:81|:82'
+```
+
+If another service still owns `:80/:443`, Hubfly nginx cannot bind those ports.
+
+### 3. Static pages not loading
+
+Hubfly syncs `static/` into `<config-dir>/www/static` at boot.
+Check both:
+
+```bash
+ls -la <config-dir>/static
+ls -la <config-dir>/www/static
+```

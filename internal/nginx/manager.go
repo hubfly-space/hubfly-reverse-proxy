@@ -879,6 +879,9 @@ func (m *Manager) pid() (int, error) {
 	}
 
 	pidStr := strings.TrimSpace(string(pidBytes))
+	if pidStr == "" {
+		return 0, os.ErrNotExist
+	}
 	pid, err := strconv.Atoi(pidStr)
 	if err != nil {
 		return 0, fmt.Errorf("invalid pid in %s: %w", m.PIDFile, err)
@@ -1144,7 +1147,7 @@ func discoverNginxPIDs() ([]int, error) {
 			}
 			return nil, fmt.Errorf("failed to discover nginx pids: %w", err)
 		}
-		return parsePIDList(string(out)), nil
+		return filterTakeoverCandidates(parsePIDList(string(out))), nil
 	}
 
 	// Fallback for hosts without pgrep.
@@ -1164,7 +1167,7 @@ func discoverNginxPIDs() ([]int, error) {
 			raw = append(raw, parts[0])
 		}
 	}
-	pids := parsePIDList(strings.Join(raw, "\n"))
+	pids := filterTakeoverCandidates(parsePIDList(strings.Join(raw, "\n")))
 	sort.Ints(pids)
 	return pids, nil
 }
@@ -1185,6 +1188,69 @@ func parsePIDList(output string) []int {
 	}
 	sort.Ints(pids)
 	return pids
+}
+
+func filterTakeoverCandidates(pids []int) []int {
+	out := make([]int, 0, len(pids))
+	for _, pid := range pids {
+		if isContainerizedNginxPID(pid) {
+			continue
+		}
+		if isNginxWorkerPID(pid) {
+			continue
+		}
+		out = append(out, pid)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func isContainerizedNginxPID(pid int) bool {
+	cgroupPath := filepath.Join("/proc", strconv.Itoa(pid), "cgroup")
+	if cgroupData, err := os.ReadFile(cgroupPath); err == nil {
+		cg := strings.ToLower(string(cgroupData))
+		if strings.Contains(cg, "docker") || strings.Contains(cg, "containerd") || strings.Contains(cg, "kubepods") || strings.Contains(cg, "libpod") {
+			return true
+		}
+	}
+
+	statPath := filepath.Join("/proc", strconv.Itoa(pid), "status")
+	if statusData, err := os.ReadFile(statPath); err == nil {
+		ppid := 0
+		for _, line := range strings.Split(string(statusData), "\n") {
+			if strings.HasPrefix(line, "PPid:") {
+				fields := strings.Fields(line)
+				if len(fields) >= 2 {
+					if parsed, convErr := strconv.Atoi(fields[1]); convErr == nil {
+						ppid = parsed
+					}
+				}
+				break
+			}
+		}
+		if ppid > 0 {
+			commPath := filepath.Join("/proc", strconv.Itoa(ppid), "comm")
+			if commData, err := os.ReadFile(commPath); err == nil {
+				parentComm := strings.TrimSpace(strings.ToLower(string(commData)))
+				if strings.Contains(parentComm, "containerd-shim") || strings.Contains(parentComm, "conmon") {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func isNginxWorkerPID(pid int) bool {
+	cmdlinePath := filepath.Join("/proc", strconv.Itoa(pid), "cmdline")
+	b, err := os.ReadFile(cmdlinePath)
+	if err != nil {
+		return false
+	}
+	cmdline := strings.ReplaceAll(string(b), "\x00", " ")
+	cmdline = strings.ToLower(strings.TrimSpace(cmdline))
+	return strings.Contains(cmdline, "worker process")
 }
 
 func (m *Manager) Restart() error {

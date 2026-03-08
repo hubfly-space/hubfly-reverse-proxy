@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -919,35 +920,42 @@ func (m *Manager) EnsureRunning() error {
 		return err
 	}
 
-	args := []string{"-c", m.NginxConf}
-	hasPIDDirective, err := m.configHasPIDDirective()
+	// If another nginx is running outside Hubfly PID tracking, stop it first.
+	if err := m.stopUnmanagedNginx(path); err != nil {
+		slog.Warn("failed_to_stop_unmanaged_nginx_before_start", "error", err)
+	}
+
+	args, err := m.startArgs()
 	if err != nil {
 		return err
 	}
-	if !hasPIDDirective {
-		args = append(args, "-g", fmt.Sprintf("pid %s;", m.PIDFile))
-	}
+
 	slog.Info("nginx_start_started", "command", path, "args", args)
 	cmd := exec.Command(path, args...)
 	start := time.Now()
 	out, err := cmd.CombinedOutput()
 	duration := time.Since(start)
 	if err != nil {
+		output := string(out)
+		if strings.Contains(output, "address already in use") {
+			slog.Warn("nginx_start_conflict_detected_retrying_takeover", "output", output)
+			if stopErr := m.stopUnmanagedNginx(path); stopErr != nil {
+				slog.Warn("failed_to_stop_unmanaged_nginx_after_conflict", "error", stopErr)
+			}
+			cmdRetry := exec.Command(path, args...)
+			retryOut, retryErr := cmdRetry.CombinedOutput()
+			if retryErr == nil {
+				slog.Info("nginx_start_retry_succeeded", "output", string(retryOut))
+				return m.waitForRunning()
+			}
+			slog.Error("nginx_start_retry_failed", "error", retryErr, "output", string(retryOut))
+		}
 		slog.Error("nginx_start_failed", "error", err, "duration", duration, "output", string(out))
 		return fmt.Errorf("nginx start failed: %s, output: %s", err, string(out))
 	}
 	slog.Info("nginx_start_command_succeeded", "duration", duration, "output", string(out))
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(250 * time.Millisecond)
-		runningNow, _, runErr := m.IsRunning()
-		if runErr == nil && runningNow {
-			return nil
-		}
-	}
-	slog.Error("nginx_start_health_check_timeout")
-	return fmt.Errorf("nginx did not become running after start")
+	return m.waitForRunning()
 }
 
 func (m *Manager) configHasPIDDirective() (bool, error) {
@@ -966,6 +974,150 @@ func (m *Manager) configHasPIDDirective() (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func (m *Manager) startArgs() ([]string, error) {
+	args := []string{"-c", m.NginxConf}
+	hasPIDDirective, err := m.configHasPIDDirective()
+	if err != nil {
+		return nil, err
+	}
+	if !hasPIDDirective {
+		args = append(args, "-g", fmt.Sprintf("pid %s;", m.PIDFile))
+	}
+	return args, nil
+}
+
+func (m *Manager) waitForRunning() error {
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+		runningNow, _, runErr := m.IsRunning()
+		if runErr == nil && runningNow {
+			return nil
+		}
+	}
+	slog.Error("nginx_start_health_check_timeout")
+	return fmt.Errorf("nginx did not become running after start")
+}
+
+func (m *Manager) stopUnmanagedNginx(path string) error {
+	running, pid, err := m.IsRunning()
+	if err == nil && running && pid > 0 {
+		return nil
+	}
+
+	pids, err := discoverNginxPIDs()
+	if err != nil {
+		return err
+	}
+	if len(pids) == 0 {
+		return nil
+	}
+
+	slog.Warn("unmanaged_nginx_detected_attempting_takeover", "pids", pids)
+	cmd := exec.Command(path, "-s", "quit")
+	out, quitErr := cmd.CombinedOutput()
+	if quitErr != nil {
+		slog.Warn("nginx_quit_command_failed_for_takeover", "error", quitErr, "output", string(out))
+	} else {
+		slog.Info("nginx_quit_command_succeeded_for_takeover", "output", string(out))
+	}
+
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+		remaining, remErr := discoverNginxPIDs()
+		if remErr != nil {
+			return remErr
+		}
+		if len(remaining) == 0 {
+			return nil
+		}
+	}
+
+	// Force-stop stubborn workers/masters to avoid port conflicts.
+	remaining, err := discoverNginxPIDs()
+	if err != nil {
+		return err
+	}
+	if len(remaining) == 0 {
+		return nil
+	}
+	slog.Warn("forcing_nginx_process_shutdown_for_takeover", "pids", remaining)
+	for _, p := range remaining {
+		_ = syscall.Kill(p, syscall.SIGTERM)
+	}
+
+	finalDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(finalDeadline) {
+		time.Sleep(200 * time.Millisecond)
+		final, finalErr := discoverNginxPIDs()
+		if finalErr != nil {
+			return finalErr
+		}
+		if len(final) == 0 {
+			return nil
+		}
+	}
+	left, _ := discoverNginxPIDs()
+	if len(left) > 0 {
+		return fmt.Errorf("unable to stop existing nginx processes: %v", left)
+	}
+	return nil
+}
+
+func discoverNginxPIDs() ([]int, error) {
+	if _, err := exec.LookPath("pgrep"); err == nil {
+		cmd := exec.Command("pgrep", "-x", "nginx")
+		out, err := cmd.Output()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("failed to discover nginx pids: %w", err)
+		}
+		return parsePIDList(string(out)), nil
+	}
+
+	// Fallback for hosts without pgrep.
+	psCmd := exec.Command("ps", "-eo", "pid=,comm=")
+	out, err := psCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover nginx pids via ps: %w", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	raw := make([]string, 0)
+	for _, line := range lines {
+		parts := strings.Fields(strings.TrimSpace(line))
+		if len(parts) < 2 {
+			continue
+		}
+		if parts[1] == "nginx" {
+			raw = append(raw, parts[0])
+		}
+	}
+	pids := parsePIDList(strings.Join(raw, "\n"))
+	sort.Ints(pids)
+	return pids, nil
+}
+
+func parsePIDList(output string) []int {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	pids := make([]int, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(line)
+		if err != nil {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
+	return pids
 }
 
 func (m *Manager) Restart() error {

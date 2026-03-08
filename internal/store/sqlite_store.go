@@ -35,6 +35,10 @@ func NewSQLiteStore(baseDir string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sites db: %w", err)
 	}
+	if err := configureSQLiteDurability(httpDB); err != nil {
+		_ = httpDB.Close()
+		return nil, fmt.Errorf("configure sites db: %w", err)
+	}
 	if err := initSQLiteDB(httpDB, "sites"); err != nil {
 		_ = httpDB.Close()
 		return nil, err
@@ -44,6 +48,11 @@ func NewSQLiteStore(baseDir string) (*SQLiteStore, error) {
 	if err != nil {
 		_ = httpDB.Close()
 		return nil, fmt.Errorf("open streams db: %w", err)
+	}
+	if err := configureSQLiteDurability(tcpDB); err != nil {
+		_ = httpDB.Close()
+		_ = tcpDB.Close()
+		return nil, fmt.Errorf("configure streams db: %w", err)
 	}
 	if err := initSQLiteDB(tcpDB, "streams"); err != nil {
 		_ = httpDB.Close()
@@ -66,6 +75,21 @@ CREATE TABLE IF NOT EXISTS %s (
 );`, table)
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("init table %s: %w", table, err)
+	}
+	return nil
+}
+
+func configureSQLiteDurability(db *sql.DB) error {
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL;",
+		"PRAGMA synchronous=FULL;",
+		"PRAGMA busy_timeout=5000;",
+		"PRAGMA wal_autocheckpoint=1000;",
+	}
+	for _, stmt := range pragmas {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
 	}
 	return nil
 }

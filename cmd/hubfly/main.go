@@ -28,6 +28,11 @@ var (
 )
 
 func main() {
+	if len(os.Args) >= 2 && strings.TrimSpace(os.Args[1]) == "version" {
+		fmt.Println(appVersion)
+		return
+	}
+
 	configDir := flag.String("config-dir", ".", "Directory for hubfly runtime data")
 	port := flag.String("port", "81", "API listening port")
 	nginxConf := flag.String("nginx-conf", "", "Path to nginx.conf (default: <config-dir>/nginx/nginx.conf)")

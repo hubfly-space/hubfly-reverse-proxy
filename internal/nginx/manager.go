@@ -919,7 +919,14 @@ func (m *Manager) EnsureRunning() error {
 		return err
 	}
 
-	args := []string{"-c", m.NginxConf, "-g", fmt.Sprintf("pid %s;", m.PIDFile)}
+	args := []string{"-c", m.NginxConf}
+	hasPIDDirective, err := m.configHasPIDDirective()
+	if err != nil {
+		return err
+	}
+	if !hasPIDDirective {
+		args = append(args, "-g", fmt.Sprintf("pid %s;", m.PIDFile))
+	}
 	slog.Info("nginx_start_started", "command", path, "args", args)
 	cmd := exec.Command(path, args...)
 	start := time.Now()
@@ -941,6 +948,24 @@ func (m *Manager) EnsureRunning() error {
 	}
 	slog.Error("nginx_start_health_check_timeout")
 	return fmt.Errorf("nginx did not become running after start")
+}
+
+func (m *Manager) configHasPIDDirective() (bool, error) {
+	content, err := os.ReadFile(m.NginxConf)
+	if err != nil {
+		return false, fmt.Errorf("failed to read nginx config: %w", err)
+	}
+	lines := strings.Split(string(content), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "pid ") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *Manager) Restart() error {

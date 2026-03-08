@@ -27,12 +27,10 @@ jobs:
           BUILD_TIME: ${{ github.event.head_commit.timestamp }}
         run: |
           set -euxo pipefail
-          mkdir -p dist/package/bin
+          mkdir -p dist/package
           GOOS=linux GOARCH=amd64 go build \
             -ldflags "-X main.appVersion=${VERSION} -X main.gitCommit=${COMMIT} -X main.buildTime=${BUILD_TIME}" \
-            -o dist/package/bin/hubfly ./cmd/hubfly
-          GOOS=linux GOARCH=amd64 go build \
-            -o dist/package/bin/migrate-json-to-sqlite ./cmd/migrate-json-to-sqlite
+            -o dist/package/hubfly-reverse-proxy ./cmd/hubfly
 
       - name: Prepare Package
         run: |

@@ -494,6 +494,11 @@ Example config:
       "domain": "eu1.hubfly.app",
       "cert_path": "wildcards/eu1/fullchain.pem",
       "key_path": "wildcards/eu1/privkey.pem"
+    },
+    {
+      "domain": "rw1.hubfly.app",
+      "cert_path": "wildcards/rw1/fullchain.pem",
+      "key_path": "wildcards/rw1/privkey.pem"
     }
   ]
 }

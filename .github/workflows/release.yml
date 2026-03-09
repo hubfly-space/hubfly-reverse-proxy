@@ -38,7 +38,8 @@ jobs:
           cp -r nginx dist/root/nginx
           cp -r templates dist/root/templates
           cp -r static dist/root/static
-          mkdir -p dist/root/data/http dist/root/data/tcp dist/root/logs/runtime dist/root/logs/nginx dist/root/certbot/{config,work,logs}
+          cp -r certbot dist/root/certbot
+          mkdir -p dist/root/data/http dist/root/data/tcp dist/root/logs/runtime dist/root/logs/nginx dist/root/certbot/work dist/root/certbot/logs
           cd dist/root
           zip -r ../hubfly-linux-amd64.zip .
 

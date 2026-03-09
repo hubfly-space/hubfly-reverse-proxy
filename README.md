@@ -482,6 +482,9 @@ Container-name upstreams like `my_container:8000` still work as long as Docker i
 Default lookup path:
 - `<config-dir>/certbot/config/wildcards/config.json`
 
+The release package includes a starter file at:
+- `certbot/config/wildcards/config.json`
+
 Optional startup flag:
 - `-wildcard-certs-config /path/to/config.json`
 

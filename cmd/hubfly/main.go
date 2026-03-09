@@ -35,7 +35,7 @@ func main() {
 	}
 
 	configDir := flag.String("config-dir", ".", "Directory for hubfly runtime data")
-	port := flag.String("port", "81", "API listening port")
+	port := flag.String("port", "10003", "API listening port")
 	nginxConf := flag.String("nginx-conf", "", "Path to nginx.conf (default: <config-dir>/nginx/nginx.conf)")
 	nginxBin := flag.String("nginx-bin", "", "Path to nginx binary (optional)")
 	nginxPid := flag.String("nginx-pid", "", "Path to nginx PID file (default: <config-dir>/run/nginx.pid)")

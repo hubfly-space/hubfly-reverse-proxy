@@ -28,6 +28,13 @@ Default runtime paths are rooted in `-config-dir` (default `.`):
 - `data/http/sites.db`
 - `data/tcp/streams.db`
 
+Default ports:
+- `10003/tcp`: Hubfly API (management API)
+- `10004/tcp`: Web UI (nginx management UI + `/v1` proxy)
+- `10005/tcp`: GoAccess WebSocket backend (`/goaccess-ws` upstream)
+- `80/tcp`: public HTTP
+- `443/tcp`: public HTTPS
+
 ## Versioning
 
 Build metadata is injected at build time and shown by APIs.
@@ -51,13 +58,13 @@ v1.0.0
 ## Run
 
 ```bash
-./hubfly-reverse-proxy -config-dir . -port 81
+./hubfly-reverse-proxy -config-dir . -port 10003
 ```
 
 With Docker upstream sync enabled:
 
 ```bash
-./hubfly-reverse-proxy -config-dir . -port 81 -enable-docker-sync -docker-sock /var/run/docker.sock
+./hubfly-reverse-proxy -config-dir . -port 10003 -enable-docker-sync -docker-sock /var/run/docker.sock
 ```
 
 ## Release
@@ -88,12 +95,14 @@ go run ./cmd/migrate-json-to-sqlite -input-dir <legacy_json_dir> -output-dir <hu
 
 ## API Usage And Testing
 
-Base URL (default): `http://localhost:81`
+Base URL (default): `http://localhost:10003`
+
+Web UI URL (default): `http://localhost:10004`
 
 ### 1. Health
 
 ```bash
-curl -s http://localhost:81/v1/health | jq
+curl -s http://localhost:10003/v1/health | jq
 ```
 
 Example response:
@@ -135,7 +144,7 @@ Example response:
 ### 2. Management Version Endpoint
 
 ```bash
-curl -s http://localhost:81/v1/management/version | jq
+curl -s http://localhost:10003/v1/management/version | jq
 ```
 
 Example response:
@@ -166,7 +175,7 @@ Example response:
 ### 3. Create Site (HTTP)
 
 ```bash
-curl -s -X POST http://localhost:81/v1/sites \
+curl -s -X POST http://localhost:10003/v1/sites \
   -H "Content-Type: application/json" \
   -d '{
     "id": "example.local",
@@ -197,7 +206,7 @@ Example response:
 ### 4. Create Site (SSL)
 
 ```bash
-curl -s -X POST http://localhost:81/v1/sites \
+curl -s -X POST http://localhost:10003/v1/sites \
   -H "Content-Type: application/json" \
   -d '{
     "id": "secure-site-1",
@@ -212,19 +221,19 @@ curl -s -X POST http://localhost:81/v1/sites \
 ### 5. List Sites
 
 ```bash
-curl -s http://localhost:81/v1/sites | jq
+curl -s http://localhost:10003/v1/sites | jq
 ```
 
 ### 6. Get Site
 
 ```bash
-curl -s http://localhost:81/v1/sites/example.local | jq
+curl -s http://localhost:10003/v1/sites/example.local | jq
 ```
 
 ### 7. Patch Site
 
 ```bash
-curl -s -X PATCH http://localhost:81/v1/sites/example.local \
+curl -s -X PATCH http://localhost:10003/v1/sites/example.local \
   -H "Content-Type: application/json" \
   -d '{
     "upstreams": ["127.0.0.1:8081", "127.0.0.1:8082"],
@@ -240,13 +249,13 @@ curl -s -X PATCH http://localhost:81/v1/sites/example.local \
 ### 8. Delete Site
 
 ```bash
-curl -s -X DELETE http://localhost:81/v1/sites/example.local | jq
+curl -s -X DELETE http://localhost:10003/v1/sites/example.local | jq
 ```
 
 Delete and revoke certificate:
 
 ```bash
-curl -s -X DELETE "http://localhost:81/v1/sites/secure-site-1?revoke_cert=true" | jq
+curl -s -X DELETE "http://localhost:10003/v1/sites/secure-site-1?revoke_cert=true" | jq
 ```
 
 Example response:
@@ -262,25 +271,25 @@ Example response:
 Access logs:
 
 ```bash
-curl -s "http://localhost:81/v1/sites/example.local/logs?type=access&limit=20" | jq
+curl -s "http://localhost:10003/v1/sites/example.local/logs?type=access&limit=20" | jq
 ```
 
 Error logs:
 
 ```bash
-curl -s "http://localhost:81/v1/sites/example.local/logs?type=error&limit=20" | jq
+curl -s "http://localhost:10003/v1/sites/example.local/logs?type=error&limit=20" | jq
 ```
 
 Search and time filter:
 
 ```bash
-curl -s "http://localhost:81/v1/sites/example.local/logs?type=access&search=POST&since=2026-03-08T00:00:00Z&until=2026-03-08T23:59:59Z" | jq
+curl -s "http://localhost:10003/v1/sites/example.local/logs?type=access&search=POST&since=2026-03-08T00:00:00Z&until=2026-03-08T23:59:59Z" | jq
 ```
 
 ### 10. Manual Certificate Retry
 
 ```bash
-curl -s -X POST http://localhost:81/v1/sites/example.local/cert/retry | jq
+curl -s -X POST http://localhost:10003/v1/sites/example.local/cert/retry | jq
 ```
 
 Example response:
@@ -299,7 +308,7 @@ Example response:
 Set firewall via site patch:
 
 ```bash
-curl -s -X PATCH http://localhost:81/v1/sites/example.local \
+curl -s -X PATCH http://localhost:10003/v1/sites/example.local \
   -H "Content-Type: application/json" \
   -d '{
     "firewall": {
@@ -326,19 +335,19 @@ curl -s -X PATCH http://localhost:81/v1/sites/example.local \
 Get firewall:
 
 ```bash
-curl -s http://localhost:81/v1/sites/example.local/firewall | jq
+curl -s http://localhost:10003/v1/sites/example.local/firewall | jq
 ```
 
 Clear firewall section:
 
 ```bash
-curl -s -X DELETE "http://localhost:81/v1/sites/example.local/firewall?section=ip_rules" | jq
+curl -s -X DELETE "http://localhost:10003/v1/sites/example.local/firewall?section=ip_rules" | jq
 ```
 
 Clear all firewall:
 
 ```bash
-curl -s -X DELETE "http://localhost:81/v1/sites/example.local/firewall" | jq
+curl -s -X DELETE "http://localhost:10003/v1/sites/example.local/firewall" | jq
 ```
 
 ### 12. Create Stream (TCP/UDP)
@@ -346,7 +355,7 @@ curl -s -X DELETE "http://localhost:81/v1/sites/example.local/firewall" | jq
 Auto-assigned listen port (30000-30100):
 
 ```bash
-curl -s -X POST http://localhost:81/v1/streams \
+curl -s -X POST http://localhost:10003/v1/streams \
   -H "Content-Type: application/json" \
   -d '{
     "id": "db-1",
@@ -372,19 +381,19 @@ Example response:
 ### 13. List Streams
 
 ```bash
-curl -s http://localhost:81/v1/streams | jq
+curl -s http://localhost:10003/v1/streams | jq
 ```
 
 ### 14. Get Stream
 
 ```bash
-curl -s http://localhost:81/v1/streams/db-1 | jq
+curl -s http://localhost:10003/v1/streams/db-1 | jq
 ```
 
 ### 15. Delete Stream
 
 ```bash
-curl -s -X DELETE http://localhost:81/v1/streams/db-1 | jq
+curl -s -X DELETE http://localhost:10003/v1/streams/db-1 | jq
 ```
 
 Example response:
@@ -398,7 +407,7 @@ Example response:
 ### 16. Manual NGINX Reload
 
 ```bash
-curl -s -X POST http://localhost:81/v1/control/reload | jq
+curl -s -X POST http://localhost:10003/v1/control/reload | jq
 ```
 
 Example response:
@@ -415,7 +424,7 @@ Example response:
 Requires `-enable-docker-sync`.
 
 ```bash
-curl -s -X POST http://localhost:81/v1/control/full-check | jq
+curl -s -X POST http://localhost:10003/v1/control/full-check | jq
 ```
 
 Example response:
@@ -499,7 +508,7 @@ Hubfly takeover is now safe:
 To verify what owns ports:
 
 ```bash
-ss -ltnp | rg ':80|:443|:81|:82'
+ss -ltnp | rg ':80|:443|:10003|:10004|:10005'
 ```
 
 If another service still owns `:80/:443`, Hubfly nginx cannot bind those ports.

@@ -989,6 +989,10 @@ func (m *Manager) ensureMainConfigPaths() error {
 	updated = strings.ReplaceAll(updated, "/var/www/hubfly/static", filepath.ToSlash(m.StaticDir))
 	updated = strings.ReplaceAll(updated, "/var/log/hubfly/access.log", filepath.ToSlash(filepath.Join(m.LogsDir, "access.log")))
 	updated = strings.ReplaceAll(updated, "/var/cache/nginx", filepath.ToSlash(filepath.Join(filepath.Dir(m.LogsDir), "cache", "nginx")))
+	// Port normalization for older extracted configs.
+	updated = strings.ReplaceAll(updated, "listen 82;", "listen 10004;")
+	updated = strings.ReplaceAll(updated, "proxy_pass http://127.0.0.1:81;", "proxy_pass http://127.0.0.1:10003;")
+	updated = strings.ReplaceAll(updated, "proxy_pass http://127.0.0.1:7890;", "proxy_pass http://127.0.0.1:10005;")
 
 	// Ensure PID file points to hubfly-managed runtime path.
 	pidPattern := regexp.MustCompile(`(?m)^\s*pid\s+[^;]+;\s*$`)

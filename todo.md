@@ -10,3 +10,4 @@
 - [x] Remove Docker-related files no longer needed.
 - [x] Update README to host-native runtime and release usage.
 - [x] Run tests/build and commit in logical steps.
+- remove depeneded on wildcards/config.json

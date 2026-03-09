@@ -9,9 +9,28 @@ Hubfly runs directly on the host (no container required) and uses host-installed
 Required tools:
 - `nginx`
 - `certbot`
+- nginx stream module (`ngx_stream_module`) is required.
 
 Optional:
 - Docker socket only if you enable container upstream sync (`-enable-docker-sync`).
+
+Install stream module:
+
+Ubuntu/Debian:
+```bash
+sudo apt update
+sudo apt install -y libnginx-mod-stream
+```
+
+RHEL/CentOS/Rocky/Alma (package name varies by repo):
+```bash
+sudo dnf install -y nginx-mod-stream || sudo dnf install -y nginx-all-modules
+```
+
+Verify module file exists (one common path example):
+```bash
+ls -l /usr/lib/nginx/modules/ngx_stream_module.so
+```
 
 Default runtime paths are rooted in `-config-dir` (default `.`):
 - `nginx/nginx.conf`
@@ -512,6 +531,15 @@ ss -ltnp | rg ':80|:443|:10003|:10004|:10005'
 ```
 
 If another service still owns `:80/:443`, Hubfly nginx cannot bind those ports.
+
+### 2.1 `unknown directive "stream"`
+
+This means nginx stream module is missing. Install it, then restart Hubfly:
+
+```bash
+sudo apt update && sudo apt install -y libnginx-mod-stream
+pm2 restart hubfly-reverse-proxy
+```
 
 ### 3. Static pages not loading
 

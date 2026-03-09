@@ -1060,14 +1060,6 @@ func (m *Manager) normalizeStreamModuleSupport(config string) string {
 		if !strings.Contains(config, loadLine) {
 			config = loadLine + "\n" + config
 		}
-		return config
-	}
-
-	// Nginx without stream module support: remove stream block so HTTP still starts.
-	streamBlockPattern := regexp.MustCompile(`(?s)\nstream\s*\{.*\}\s*$`)
-	if streamBlockPattern.MatchString(config) {
-		slog.Warn("nginx_stream_module_unavailable_disabling_stream_block")
-		config = streamBlockPattern.ReplaceAllString(config, "\n")
 	}
 	return config
 }
@@ -1156,7 +1148,11 @@ func (m *Manager) testMainConfig(path string) error {
 	cmd := exec.Command(path, "-t", "-c", m.NginxConf)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("nginx config validation failed: %s", strings.TrimSpace(string(out)))
+		output := strings.TrimSpace(string(out))
+		if strings.Contains(output, `unknown directive "stream"`) {
+			return fmt.Errorf("nginx config validation failed: %s. stream module is required; install it (for Ubuntu/Debian: apt install libnginx-mod-stream) and restart", output)
+		}
+		return fmt.Errorf("nginx config validation failed: %s", output)
 	}
 	return nil
 }

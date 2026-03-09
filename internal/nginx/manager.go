@@ -2,8 +2,14 @@ package nginx
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"os"
 	"os/exec"
 	"os/user"
@@ -154,6 +160,9 @@ func (m *Manager) EnsureDirs() error {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			return err
 		}
+	}
+	if err := m.ensureFallbackCertificate(); err != nil {
+		return err
 	}
 	if err := m.ensureMainConfigPaths(); err != nil {
 		return err
@@ -989,6 +998,12 @@ func (m *Manager) ensureMainConfigPaths() error {
 	updated = strings.ReplaceAll(updated, "/var/www/hubfly/static", filepath.ToSlash(m.StaticDir))
 	updated = strings.ReplaceAll(updated, "/var/log/hubfly/access.log", filepath.ToSlash(filepath.Join(m.LogsDir, "access.log")))
 	updated = strings.ReplaceAll(updated, "/var/cache/nginx", filepath.ToSlash(filepath.Join(filepath.Dir(m.LogsDir), "cache", "nginx")))
+	// Compatibility: older nginx versions (for example 1.18.x) don't support ssl_reject_handshake.
+	updated = strings.ReplaceAll(
+		updated,
+		"ssl_reject_handshake on;",
+		fmt.Sprintf("ssl_certificate %s;\n        ssl_certificate_key %s;\n        return 444;", filepath.ToSlash(m.FallbackCert), filepath.ToSlash(m.FallbackKey)),
+	)
 	// Port normalization for older extracted configs.
 	updated = strings.ReplaceAll(updated, "listen 82;", "listen 10004;")
 	updated = strings.ReplaceAll(updated, "proxy_pass http://127.0.0.1:81;", "proxy_pass http://127.0.0.1:10003;")
@@ -1029,6 +1044,72 @@ func (m *Manager) ensureMainConfigPaths() error {
 	if err := os.WriteFile(m.NginxConf, []byte(updated), 0644); err != nil {
 		return fmt.Errorf("failed to update nginx runtime config %s: %w", m.NginxConf, err)
 	}
+	return nil
+}
+
+func (m *Manager) ensureFallbackCertificate() error {
+	if fileExists(m.FallbackCert) && fileExists(m.FallbackKey) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(m.FallbackCert), 0755); err != nil {
+		return err
+	}
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return fmt.Errorf("generate fallback key: %w", err)
+	}
+
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return fmt.Errorf("generate fallback serial: %w", err)
+	}
+
+	now := time.Now().UTC()
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName: "hubfly-fallback.local",
+		},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"hubfly-fallback.local", "localhost"},
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return fmt.Errorf("create fallback certificate: %w", err)
+	}
+
+	certOut, err := os.OpenFile(m.FallbackCert, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("open fallback cert file: %w", err)
+	}
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+		_ = certOut.Close()
+		return fmt.Errorf("write fallback cert: %w", err)
+	}
+	if err := certOut.Close(); err != nil {
+		return fmt.Errorf("close fallback cert file: %w", err)
+	}
+
+	keyOut, err := os.OpenFile(m.FallbackKey, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("open fallback key file: %w", err)
+	}
+	privBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: privBytes}); err != nil {
+		_ = keyOut.Close()
+		return fmt.Errorf("write fallback key: %w", err)
+	}
+	if err := keyOut.Close(); err != nil {
+		return fmt.Errorf("close fallback key file: %w", err)
+	}
+
 	return nil
 }
 

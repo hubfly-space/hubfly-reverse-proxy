@@ -40,9 +40,9 @@ jobs:
           cp -r static dist/root/static
           mkdir -p dist/root/data/http dist/root/data/tcp dist/root/logs/runtime dist/root/logs/nginx dist/root/certbot/{config,work,logs}
           cd dist/root
-          zip -r ../hubfly-${{ github.ref_name }}-linux-amd64.zip .
+          zip -r ../hubfly-linux-amd64.zip .
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/hubfly-${{ github.ref_name }}-linux-amd64.zip
+          files: dist/hubfly-linux-amd64.zip

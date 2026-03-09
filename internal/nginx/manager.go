@@ -1038,6 +1038,8 @@ func (m *Manager) ensureMainConfigPaths() error {
 		updated = userPattern.ReplaceAllString(updated, "# user directive managed by host defaults")
 	}
 
+	updated = m.normalizeStreamModuleSupport(updated)
+
 	if updated == string(content) {
 		return nil
 	}
@@ -1045,6 +1047,43 @@ func (m *Manager) ensureMainConfigPaths() error {
 		return fmt.Errorf("failed to update nginx runtime config %s: %w", m.NginxConf, err)
 	}
 	return nil
+}
+
+func (m *Manager) normalizeStreamModuleSupport(config string) string {
+	if !strings.Contains(config, "stream {") {
+		return config
+	}
+
+	streamModulePath := discoverStreamModulePath()
+	if streamModulePath != "" {
+		loadLine := fmt.Sprintf("load_module %s;", filepath.ToSlash(streamModulePath))
+		if !strings.Contains(config, loadLine) {
+			config = loadLine + "\n" + config
+		}
+		return config
+	}
+
+	// Nginx without stream module support: remove stream block so HTTP still starts.
+	streamBlockPattern := regexp.MustCompile(`(?s)\nstream\s*\{.*\}\s*$`)
+	if streamBlockPattern.MatchString(config) {
+		slog.Warn("nginx_stream_module_unavailable_disabling_stream_block")
+		config = streamBlockPattern.ReplaceAllString(config, "\n")
+	}
+	return config
+}
+
+func discoverStreamModulePath() string {
+	candidates := []string{
+		"/usr/lib/nginx/modules/ngx_stream_module.so",
+		"/usr/lib64/nginx/modules/ngx_stream_module.so",
+		"/usr/share/nginx/modules/ngx_stream_module.so",
+	}
+	for _, path := range candidates {
+		if fileExists(path) {
+			return path
+		}
+	}
+	return ""
 }
 
 func (m *Manager) ensureFallbackCertificate() error {

@@ -12,7 +12,8 @@ Required tools:
 - nginx stream module (`ngx_stream_module`) is required.
 
 Optional:
-- Docker socket only if you enable container upstream sync (`-enable-docker-sync`).
+- Docker endpoint for container-name upstream resolution.
+- `-enable-docker-sync` only controls periodic resync, not initial container-name resolution.
 
 Install stream module:
 
@@ -83,7 +84,13 @@ v1.0.0
 With Docker upstream sync enabled:
 
 ```bash
-./hubfly-reverse-proxy -config-dir . -port 10003 -enable-docker-sync -docker-sock /var/run/docker.sock
+./hubfly-reverse-proxy -config-dir . -port 10003 -enable-docker-sync -docker-sock 127.0.0.1:10010
+```
+
+Unix socket example:
+
+```bash
+./hubfly-reverse-proxy -config-dir . -docker-sock /var/run/docker.sock
 ```
 
 ## Release
@@ -467,6 +474,8 @@ If Docker sync is disabled, response is:
   "code": 503
 }
 ```
+
+Container-name upstreams like `my_container:8000` still work as long as Docker is reachable via `-docker-sock`. The `-enable-docker-sync` flag is only required for hourly resync and the manual full-check endpoint.
 
 ### 18. Wildcard Certificate Mapping (Optional)
 

@@ -49,7 +49,7 @@ func main() {
 	appLogDir := flag.String("app-log-dir", "", "Directory for Hubfly runtime logs (default: <config-dir>/logs/runtime)")
 	appLogRetention := flag.String("app-log-retention", "168h", "Retention for Hubfly runtime logs (Go duration, e.g. 168h)")
 	appLogCleanupInterval := flag.String("app-log-cleanup-interval", "1h", "Cleanup interval for Hubfly runtime logs (Go duration)")
-	dockerSock := flag.String("docker-sock", "/var/run/docker.sock", "Path to Docker engine socket")
+	dockerSock := flag.String("docker-sock", "127.0.0.1:10010", "Docker engine endpoint. Supports tcp host:port, http(s)://host:port, unix:///path, or /path/to/socket")
 	enableDockerSync := flag.Bool("enable-docker-sync", false, "Enable Docker-based upstream resolution/sync")
 	flag.Parse()
 
@@ -171,13 +171,10 @@ func main() {
 	cm := certbot.NewManager(*webrootDir, "cert-support@hubfly.app", *certbotBin, *certsDir, *certbotWorkDir, *certbotLogsDir)
 	logStartupHealth(appVersion, gitCommit, buildTime, nm, cm)
 
-	var dockerClient *dockerengine.Client
-	if *enableDockerSync {
-		dockerClient = dockerengine.NewClient(*dockerSock)
-	}
+	dockerClient := dockerengine.NewClient(*dockerSock)
 	lm := logmanager.NewManager(*logsDir)
 
-	srv := api.NewServer(st, nm, cm, dockerClient, lm, api.BuildInfo{
+	srv := api.NewServer(st, nm, cm, dockerClient, *enableDockerSync, lm, api.BuildInfo{
 		Version:   appVersion,
 		Commit:    gitCommit,
 		BuildTime: buildTime,

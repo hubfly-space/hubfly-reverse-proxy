@@ -46,6 +46,7 @@ type Server struct {
 	Nginx      *nginx.Manager
 	Certbot    *certbot.Manager
 	Docker     *dockerengine.Client
+	DockerSync bool
 	LogManager *logmanager.Manager
 	BuildInfo  BuildInfo
 	startedAt  time.Time
@@ -60,12 +61,13 @@ type BuildInfo struct {
 	BuildTime string
 }
 
-func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockerengine.Client, l *logmanager.Manager, buildInfo BuildInfo) *Server {
+func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockerengine.Client, dockerSync bool, l *logmanager.Manager, buildInfo BuildInfo) *Server {
 	srv := &Server{
 		Store:      s,
 		Nginx:      n,
 		Certbot:    c,
 		Docker:     d,
+		DockerSync: dockerSync,
 		LogManager: l,
 		BuildInfo:  buildInfo,
 		startedAt:  time.Now(),
@@ -78,7 +80,7 @@ func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockereng
 
 // Bootstrap ensures stored site/stream state is reconciled to NGINX at startup.
 func (s *Server) Bootstrap() {
-	if s.Docker != nil {
+	if s.Docker != nil && s.DockerSync {
 		_, _, _ = s.syncSitesFromContainers()
 		_, _, _ = s.syncStreamsFromContainers()
 	}
@@ -227,6 +229,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	dockerRequired := s.Docker != nil
 	if s.Docker != nil {
 		dockerHealth = s.Docker.Health()
+		if !s.DockerSync && dockerHealth.Error == "" {
+			dockerHealth.Error = "docker sync disabled"
+		}
 	}
 	status := "ok"
 	if !nginxHealth.Available || !nginxHealth.Running || !certbotHealth.Available || (dockerRequired && !dockerHealth.Available) {
@@ -608,7 +613,7 @@ func (s *Server) provisionStream(stream *models.Stream) {
 }
 
 func (s *Server) upstreamSyncLoop() {
-	if s.Docker == nil {
+	if s.Docker == nil || !s.DockerSync {
 		return
 	}
 

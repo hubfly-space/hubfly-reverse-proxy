@@ -15,13 +15,14 @@ import (
 )
 
 type Client struct {
-	SocketPath string
+	Endpoint   string
 	httpClient *http.Client
+	baseURL    string
 }
 
 type Health struct {
 	Available     bool   `json:"available"`
-	SocketPath    string `json:"socket_path"`
+	Endpoint      string `json:"endpoint"`
 	APIVersion    string `json:"api_version,omitempty"`
 	EngineVersion string `json:"engine_version,omitempty"`
 	Error         string `json:"error,omitempty"`
@@ -40,22 +41,29 @@ type inspectResponse struct {
 	} `json:"NetworkSettings"`
 }
 
-func NewClient(socketPath string) *Client {
+func NewClient(endpoint string) *Client {
+	endpoint = normalizeEndpoint(endpoint)
+
 	dialer := &net.Dialer{Timeout: 2 * time.Second}
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+	transport := &http.Transport{}
+	baseURL := endpoint
+	if isUnixSocketEndpoint(endpoint) {
+		socketPath := strings.TrimPrefix(endpoint, "unix://")
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.DialContext(ctx, "unix", socketPath)
-		},
+		}
+		baseURL = "http://docker"
 	}
 
 	return &Client{
-		SocketPath: socketPath,
+		Endpoint:   endpoint,
 		httpClient: &http.Client{Timeout: 4 * time.Second, Transport: transport},
+		baseURL:    strings.TrimRight(baseURL, "/"),
 	}
 }
 
 func (c *Client) Health() Health {
-	h := Health{SocketPath: c.SocketPath}
+	h := Health{Endpoint: c.Endpoint}
 	version, err := c.Version()
 	if err != nil {
 		h.Error = err.Error()
@@ -68,10 +76,10 @@ func (c *Client) Health() Health {
 }
 
 func (c *Client) Version() (*versionResponse, error) {
-	slog.Debug("docker_version_request_started", "socket_path", c.SocketPath)
+	slog.Debug("docker_version_request_started", "endpoint", c.Endpoint)
 	body, err := c.get("/version")
 	if err != nil {
-		slog.Warn("docker_version_request_failed", "socket_path", c.SocketPath, "error", err)
+		slog.Warn("docker_version_request_failed", "endpoint", c.Endpoint, "error", err)
 		return nil, err
 	}
 	defer body.Close()
@@ -151,7 +159,7 @@ func PickIPFromNetworks(networkIPs map[string]string, preferredNetwork string, f
 
 func (c *Client) get(endpoint string) (io.ReadCloser, error) {
 	start := time.Now()
-	req, err := http.NewRequest(http.MethodGet, "http://docker"+endpoint, nil)
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -170,4 +178,22 @@ func (c *Client) get(endpoint string) (io.ReadCloser, error) {
 	slog.Debug("docker_request_succeeded", "endpoint", endpoint, "status", resp.StatusCode, "duration", time.Since(start))
 
 	return resp.Body, nil
+}
+
+func normalizeEndpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return "http://127.0.0.1:10010"
+	}
+	if strings.HasPrefix(endpoint, "/") {
+		return "unix://" + endpoint
+	}
+	if strings.HasPrefix(endpoint, "unix://") || strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		return endpoint
+	}
+	return "http://" + endpoint
+}
+
+func isUnixSocketEndpoint(endpoint string) bool {
+	return strings.HasPrefix(endpoint, "unix://")
 }

@@ -838,7 +838,7 @@ func (m *Manager) Reload() error {
 		return nil // Skip if no nginx
 	}
 	slog.Info("nginx_reload_started", "command", path, "pid_file", m.PIDFile)
-	cmd := exec.Command(path, "-s", "reload")
+	cmd := exec.Command(path, "-s", "reload", "-c", m.NginxConf)
 	start := time.Now()
 	out, err := cmd.CombinedOutput()
 	duration := time.Since(start)
@@ -1411,7 +1411,7 @@ func (m *Manager) Restart() error {
 	}
 
 	slog.Info("nginx_restart_started", "command", path)
-	cmd := exec.Command(path, "-s", "quit")
+	cmd := exec.Command(path, "-s", "quit", "-c", m.NginxConf)
 	quitOut, quitErr := cmd.CombinedOutput()
 	if quitErr != nil {
 		slog.Warn("nginx_quit_before_restart_failed", "error", quitErr, "output", string(quitOut))

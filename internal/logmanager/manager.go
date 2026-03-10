@@ -44,6 +44,19 @@ func NewManager(logDir string) *Manager {
 	return &Manager{LogDir: logDir}
 }
 
+func (m *Manager) DeleteSiteLogs(siteID string) error {
+	paths := []string{
+		filepath.Join(m.LogDir, siteID+".access.log"),
+		filepath.Join(m.LogDir, siteID+".error.log"),
+	}
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // Access Log Regex
 // $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" "$request_time"
 // Example: 127.0.0.1 - - [26/Dec/2025:10:00:00 +0000] "GET / HTTP/1.1" 200 612 "-" "Mozilla/5.0" "0.001"
@@ -100,8 +113,8 @@ func (m *Manager) scanFileBackwards(filename string, callback func(string) bool)
 						return nil
 					}
 				}
-			tail = nil
-			p = i
+				tail = nil
+				p = i
 			}
 		}
 		tail = append(chunk[:p], tail...)

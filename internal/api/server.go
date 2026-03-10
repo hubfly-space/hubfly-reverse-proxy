@@ -1173,6 +1173,13 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if s.LogManager != nil {
+			if err := s.LogManager.DeleteSiteLogs(id); err != nil {
+				errorResponse(w, 500, "failed to remove site logs: "+err.Error())
+				return
+			}
+		}
+
 		if err := s.Store.DeleteSite(id); err != nil {
 			errorResponse(w, 500, err.Error())
 			return

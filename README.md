@@ -7,7 +7,7 @@ Host-native reverse proxy manager for NGINX + Certbot with a Go API.
 Hubfly runs directly on the host (no container required) and uses host-installed tools.
 
 Required tools:
-- `nginx`
+- `nginx version: nginx/1.29.6 (important) its have nginx stream module built-in`
 - `certbot`
 - nginx stream module (`ngx_stream_module`) is required.
 

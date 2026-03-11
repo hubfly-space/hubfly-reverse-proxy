@@ -502,6 +502,11 @@ Example config:
       "domain": "rw1.hubfly.app",
       "cert_path": "wildcards/rw1/fullchain.pem",
       "key_path": "wildcards/rw1/privkey.pem"
+    },
+    {
+      "domain": "us1.hubfly.app",
+      "cert_path": "wildcards/us1/fullchain.pem",
+      "key_path": "wildcards/us1/privkey.pem"
     }
   ]
 }

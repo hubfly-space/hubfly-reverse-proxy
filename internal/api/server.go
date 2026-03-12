@@ -119,6 +119,7 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/health", s.handleHealth)
 	mux.HandleFunc("/v1/management/version", s.handleManagementVersion)
+	mux.HandleFunc("/v1/management/container-ports", s.handleContainerPorts)
 	mux.HandleFunc("/v1/sites", s.handleSites)           // GET, POST
 	mux.HandleFunc("/v1/sites/", s.handleSiteDetail)     // GET, DELETE, PATCH
 	mux.HandleFunc("/v1/streams", s.handleStreams)       // GET, POST
@@ -127,6 +128,22 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/control/full-check", s.handleManualFullCheckReload)
 
 	return s.loggingMiddleware(mux)
+}
+
+type containerPortsRequest struct {
+	Container   string `json:"container"`
+	Network     string `json:"network,omitempty"`
+	FromPort    int    `json:"from_port,omitempty"`
+	ToPort      int    `json:"to_port,omitempty"`
+	Ports       []int  `json:"ports,omitempty"`
+	TimeoutMS   int    `json:"timeout_ms,omitempty"`
+	Concurrency int    `json:"concurrency,omitempty"`
+}
+
+type containerPortsResult struct {
+	IP        string `json:"ip"`
+	Network   string `json:"network"`
+	OpenPorts []int  `json:"open_ports"`
 }
 
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
@@ -287,6 +304,85 @@ func (s *Server) handleManagementVersion(w http.ResponseWriter, r *http.Request)
 				"version":   certbotHealth.Version,
 			},
 		},
+	})
+}
+
+func (s *Server) handleContainerPorts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errorResponse(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Docker == nil {
+		errorResponse(w, http.StatusServiceUnavailable, "docker engine is unavailable")
+		return
+	}
+
+	var req containerPortsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errorResponse(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	req.Container = strings.TrimSpace(req.Container)
+	if req.Container == "" {
+		errorResponse(w, http.StatusBadRequest, "container is required")
+		return
+	}
+
+	ports, err := normalizePortScanRequest(req)
+	if err != nil {
+		errorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+	if req.TimeoutMS <= 0 {
+		timeout = 150 * time.Millisecond
+	}
+	concurrency := req.Concurrency
+	if concurrency <= 0 {
+		concurrency = 512
+	}
+	if concurrency > 2048 {
+		concurrency = 2048
+	}
+
+	networkIPs, err := s.Docker.ResolveContainerIPs(req.Container)
+	if err != nil {
+		errorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	networkNames := make([]string, 0, len(networkIPs))
+	for networkName := range networkIPs {
+		if req.Network != "" && networkName != req.Network {
+			continue
+		}
+		networkNames = append(networkNames, networkName)
+	}
+	sort.Strings(networkNames)
+	if len(networkNames) == 0 {
+		errorResponse(w, http.StatusBadRequest, "no matching container network found")
+		return
+	}
+
+	started := time.Now()
+	results := make([]containerPortsResult, 0, len(networkNames))
+	for _, networkName := range networkNames {
+		ip := strings.TrimSpace(networkIPs[networkName])
+		openPorts := scanOpenTCPPorts(ip, ports, timeout, concurrency)
+		results = append(results, containerPortsResult{
+			IP:        ip,
+			Network:   networkName,
+			OpenPorts: openPorts,
+		})
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"container":     req.Container,
+		"ports_scanned": len(ports),
+		"timeout_ms":    timeout.Milliseconds(),
+		"concurrency":   concurrency,
+		"duration_ms":   time.Since(started).Milliseconds(),
+		"results":       results,
 	})
 }
 
@@ -1483,6 +1579,90 @@ func errorResponse(w http.ResponseWriter, code int, msg string) {
 		"error": msg,
 		"code":  code,
 	})
+}
+
+func normalizePortScanRequest(req containerPortsRequest) ([]int, error) {
+	if len(req.Ports) > 0 {
+		seen := make(map[int]bool, len(req.Ports))
+		out := make([]int, 0, len(req.Ports))
+		for _, port := range req.Ports {
+			if port < 1 || port > 65535 {
+				return nil, fmt.Errorf("ports must be between 1 and 65535")
+			}
+			if !seen[port] {
+				seen[port] = true
+				out = append(out, port)
+			}
+		}
+		sort.Ints(out)
+		return out, nil
+	}
+
+	fromPort := req.FromPort
+	toPort := req.ToPort
+	if fromPort == 0 && toPort == 0 {
+		fromPort = 1
+		toPort = 65535
+	}
+	if fromPort < 1 || toPort < 1 || fromPort > 65535 || toPort > 65535 {
+		return nil, fmt.Errorf("from_port and to_port must be between 1 and 65535")
+	}
+	if fromPort > toPort {
+		return nil, fmt.Errorf("from_port must be less than or equal to to_port")
+	}
+
+	out := make([]int, 0, toPort-fromPort+1)
+	for port := fromPort; port <= toPort; port++ {
+		out = append(out, port)
+	}
+	return out, nil
+}
+
+func scanOpenTCPPorts(ip string, ports []int, timeout time.Duration, concurrency int) []int {
+	if len(ports) == 0 {
+		return nil
+	}
+
+	jobs := make(chan int, len(ports))
+	results := make(chan int, len(ports))
+	var wg sync.WaitGroup
+
+	workerCount := concurrency
+	if workerCount > len(ports) {
+		workerCount = len(ports)
+	}
+	if workerCount < 1 {
+		workerCount = 1
+	}
+
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for port := range jobs {
+				address := net.JoinHostPort(ip, strconv.Itoa(port))
+				conn, err := net.DialTimeout("tcp", address, timeout)
+				if err == nil {
+					_ = conn.Close()
+					results <- port
+				}
+			}
+		}()
+	}
+
+	for _, port := range ports {
+		jobs <- port
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+
+	openPorts := make([]int, 0)
+	for port := range results {
+		openPorts = append(openPorts, port)
+	}
+	sort.Ints(openPorts)
+	return openPorts
 }
 
 func (s *Server) handleSiteLogs(w http.ResponseWriter, r *http.Request, siteID string) {

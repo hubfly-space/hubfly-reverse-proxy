@@ -198,6 +198,55 @@ Example response:
 }
 ```
 
+### 2.1. Container Port Discovery
+
+Scan a container IP for listening TCP ports.
+
+Example: full range scan
+
+```bash
+curl -s -X POST http://localhost:10003/v1/management/container-ports \
+  -H "Content-Type: application/json" \
+  -d '{
+    "container": "determined_bassi",
+    "from_port": 1,
+    "to_port": 65535,
+    "timeout_ms": 150,
+    "concurrency": 512
+  }' | jq
+```
+
+Example: targeted scan
+
+```bash
+curl -s -X POST http://localhost:10003/v1/management/container-ports \
+  -H "Content-Type: application/json" \
+  -d '{
+    "container": "determined_bassi",
+    "ports": [80, 443, 8000, 8080],
+    "network": "bridge"
+  }' | jq
+```
+
+Example response:
+
+```json
+{
+  "container": "determined_bassi",
+  "ports_scanned": 4,
+  "timeout_ms": 150,
+  "concurrency": 512,
+  "duration_ms": 19,
+  "results": [
+    {
+      "ip": "172.18.0.4",
+      "network": "bridge",
+      "open_ports": [8000]
+    }
+  ]
+}
+```
+
 ### 3. Create Site (HTTP)
 
 ```bash

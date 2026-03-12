@@ -121,6 +121,9 @@ go run ./cmd/migrate-json-to-sqlite -input-dir <legacy_json_dir> -output-dir <hu
 
 ## API Usage And Testing
 
+Full endpoint reference:
+- [API.md](/home/bonheur/Desktop/Projects/hubfly-tools/hubfly-reverse-proxy/API.md)
+
 Base URL (default): `http://localhost:10003`
 
 Web UI URL (default): `http://localhost:10004`

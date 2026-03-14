@@ -998,6 +998,7 @@ func (m *Manager) ensureMainConfigPaths() error {
 	updated = strings.ReplaceAll(updated, "/var/www/hubfly/static", filepath.ToSlash(m.StaticDir))
 	updated = strings.ReplaceAll(updated, "/var/log/hubfly/access.log", filepath.ToSlash(filepath.Join(m.LogsDir, "access.log")))
 	updated = strings.ReplaceAll(updated, "/var/cache/nginx", filepath.ToSlash(filepath.Join(filepath.Dir(m.LogsDir), "cache", "nginx")))
+	updated = ensureServerNameHashConfig(updated)
 	// Compatibility: older nginx versions (for example 1.18.x) don't support ssl_reject_handshake.
 	updated = strings.ReplaceAll(
 		updated,
@@ -1047,6 +1048,20 @@ func (m *Manager) ensureMainConfigPaths() error {
 		return fmt.Errorf("failed to update nginx runtime config %s: %w", m.NginxConf, err)
 	}
 	return nil
+}
+
+func ensureServerNameHashConfig(config string) string {
+	if strings.Contains(config, "server_names_hash_bucket_size") && strings.Contains(config, "server_names_hash_max_size") {
+		return config
+	}
+
+	httpBlockPattern := regexp.MustCompile(`http\s*\{\n`)
+	if !httpBlockPattern.MatchString(config) {
+		return config
+	}
+
+	injected := "http {\n    server_names_hash_bucket_size 128;\n    server_names_hash_max_size 4096;\n"
+	return httpBlockPattern.ReplaceAllString(config, injected)
 }
 
 func (m *Manager) normalizeStreamModuleSupport(config string) string {

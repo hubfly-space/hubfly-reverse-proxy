@@ -6,17 +6,19 @@ import (
 
 // Site represents a virtual host configuration.
 type Site struct {
-	ID                 string            `json:"id"`
-	Domain             string            `json:"domain"`
-	Upstreams          []string          `json:"upstreams"`
-	UpstreamContainers []string          `json:"upstream_containers,omitempty"`
-	UpstreamNetworks   []string          `json:"upstream_networks,omitempty"`
-	LoadBalancing      *LoadBalancing    `json:"load_balancing,omitempty"`
-	ForceSSL           bool              `json:"force_ssl"` // Redirect HTTP to HTTPS
-	SSL                bool              `json:"ssl"`       // Enable SSL (requires cert)
-	Templates          []string          `json:"templates"`
-	ExtraConfig        string            `json:"extra_config,omitempty"`
-	ProxySetHeaders    map[string]string `json:"proxy_set_header,omitempty"`
+	ID                   string            `json:"id"`
+	Domain               string            `json:"domain"`
+	Upstreams            []string          `json:"upstreams"`
+	UpstreamContainers   []string          `json:"upstream_containers,omitempty"`
+	UpstreamNetworks     []string          `json:"upstream_networks,omitempty"`
+	UpstreamMissingSince []*time.Time      `json:"upstream_missing_since,omitempty"`
+	DisabledUpstreams    []bool            `json:"disabled_upstreams,omitempty"`
+	LoadBalancing        *LoadBalancing    `json:"load_balancing,omitempty"`
+	ForceSSL             bool              `json:"force_ssl"` // Redirect HTTP to HTTPS
+	SSL                  bool              `json:"ssl"`       // Enable SSL (requires cert)
+	Templates            []string          `json:"templates"`
+	ExtraConfig          string            `json:"extra_config,omitempty"`
+	ProxySetHeaders      map[string]string `json:"proxy_set_header,omitempty"`
 
 	// Firewall Configuration
 	Firewall *FirewallConfig `json:"firewall,omitempty"`

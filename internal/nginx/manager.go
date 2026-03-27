@@ -301,52 +301,63 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 
 	upstreamName := "hubfly_upstream_" + sanitizeName(site.ID)
 	upstreamTargets := make([]upstreamTarget, 0, len(site.Upstreams))
+	activeUpstreams := make([]string, 0, len(site.Upstreams))
 	for i, endpoint := range site.Upstreams {
+		if i < len(site.DisabledUpstreams) && site.DisabledUpstreams[i] {
+			continue
+		}
 		weight := 1
 		if i < len(lbWeights) && lbWeights[i] > 0 {
 			weight = lbWeights[i]
 		}
+		activeUpstreams = append(activeUpstreams, endpoint)
 		upstreamTargets = append(upstreamTargets, upstreamTarget{
 			Address: endpoint,
 			Weight:  weight,
 		})
 	}
-	proxyPassTarget := fmt.Sprintf("http://%s", site.Upstreams[0])
-	if useLoadBalancing {
+	hasAvailableUpstream := len(activeUpstreams) > 0
+	proxyPassTarget := ""
+	if hasAvailableUpstream {
+		proxyPassTarget = fmt.Sprintf("http://%s", activeUpstreams[0])
+	}
+	if useLoadBalancing && hasAvailableUpstream {
 		proxyPassTarget = fmt.Sprintf("http://%s", upstreamName)
 	}
 
 	// Wrapper for template data
 	data := struct {
 		*models.Site
-		TemplateSnippets  string
-		SSLCertificate    string
-		SSLKey            string
-		EffectiveForceSSL bool
-		UsingFallbackCert bool
-		LogsDir           string
-		WebrootDir        string
-		StaticDir         string
-		UpstreamName      string
-		UpstreamTargets   []upstreamTarget
-		LoadBalanceAlgo   string
-		UseLoadBalancing  bool
-		ProxyPassTarget   string
+		TemplateSnippets     string
+		SSLCertificate       string
+		SSLKey               string
+		EffectiveForceSSL    bool
+		UsingFallbackCert    bool
+		LogsDir              string
+		WebrootDir           string
+		StaticDir            string
+		UpstreamName         string
+		UpstreamTargets      []upstreamTarget
+		LoadBalanceAlgo      string
+		UseLoadBalancing     bool
+		HasAvailableUpstream bool
+		ProxyPassTarget      string
 	}{
-		Site:              site,
-		TemplateSnippets:  templateContent.String(),
-		SSLCertificate:    certPath,
-		SSLKey:            keyPath,
-		EffectiveForceSSL: effectiveForceSSL,
-		UsingFallbackCert: usingFallbackCert,
-		LogsDir:           m.LogsDir,
-		WebrootDir:        m.WebrootDir,
-		StaticDir:         m.StaticDir,
-		UpstreamName:      upstreamName,
-		UpstreamTargets:   upstreamTargets,
-		LoadBalanceAlgo:   lbAlgorithm,
-		UseLoadBalancing:  useLoadBalancing,
-		ProxyPassTarget:   proxyPassTarget,
+		Site:                 site,
+		TemplateSnippets:     templateContent.String(),
+		SSLCertificate:       certPath,
+		SSLKey:               keyPath,
+		EffectiveForceSSL:    effectiveForceSSL,
+		UsingFallbackCert:    usingFallbackCert,
+		LogsDir:              m.LogsDir,
+		WebrootDir:           m.WebrootDir,
+		StaticDir:            m.StaticDir,
+		UpstreamName:         upstreamName,
+		UpstreamTargets:      upstreamTargets,
+		LoadBalanceAlgo:      lbAlgorithm,
+		UseLoadBalancing:     useLoadBalancing && hasAvailableUpstream,
+		HasAvailableUpstream: hasAvailableUpstream,
+		ProxyPassTarget:      proxyPassTarget,
 	}
 
 	// Basic server block template
@@ -397,7 +408,11 @@ server {
         # If we use location ~ $path, it takes precedence.
         # So we must include proxy logic inside.
         set $upstream_endpoint "{{ $.ProxyPassTarget }}";
+        {{ if $.HasAvailableUpstream }}
         proxy_pass $upstream_endpoint;
+        {{ else }}
+        return 502;
+        {{ end }}
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
@@ -445,7 +460,11 @@ server {
         {{ end }}
         {{ end }}
 
+        {{ if $.HasAvailableUpstream }}
         proxy_pass $upstream_endpoint;
+        {{ else }}
+        return 502;
+        {{ end }}
 
         # WebSocket Support
         proxy_http_version 1.1;
@@ -507,7 +526,11 @@ server {
     location ~ {{ $path }} {
         if ($request_method ~* "({{ join $methods "|" }})") { return 405; }
         set $upstream_endpoint "{{ $.ProxyPassTarget }}";
+        {{ if .HasAvailableUpstream }}
         proxy_pass $upstream_endpoint;
+        {{ else }}
+        return 502;
+        {{ end }}
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
@@ -549,7 +572,11 @@ server {
         {{ end }}
         {{ end }}
 
+        {{ if .HasAvailableUpstream }}
         proxy_pass $upstream_endpoint;
+        {{ else }}
+        return 502;
+        {{ end }}
 
         # WebSocket Support
         proxy_http_version 1.1;

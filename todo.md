@@ -11,3 +11,4 @@
 - [x] Update README to host-native runtime and release usage.
 - [x] Run tests/build and commit in logical steps.
 - remove depeneded on wildcards/config.json
+- make sure it maps to the correct domain name and ip well

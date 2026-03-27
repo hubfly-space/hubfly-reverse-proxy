@@ -36,7 +36,8 @@ var certRetrySchedule = []time.Duration{
 }
 
 const certRetrySweepInterval = 30 * time.Second
-const upstreamSyncInterval = 1 * time.Hour
+const upstreamSyncInterval = 1 * time.Minute
+const missingContainerGracePeriod = 5 * time.Minute
 const maxLoggedBodyBytes = 32 * 1024
 
 type requestIDContextKey struct{}
@@ -671,6 +672,10 @@ func (s *Server) reconcileStreamsWithReload(port int, reload bool) {
 	var portStreams []models.Stream
 	for _, str := range allStreams {
 		if str.ListenPort == port {
+			if str.Disabled {
+				s.updateStreamStatus(str.ID, "error", "tracked container missing for over 5 minutes; stream disabled to avoid stale IP routing")
+				continue
+			}
 			if strings.TrimSpace(str.Upstream) == "" {
 				s.updateStreamStatus(str.ID, "error", "empty upstream")
 				continue
@@ -837,8 +842,24 @@ func (s *Server) syncStreamsFromContainers() (bool, []int, error) {
 	return changed, ports, nil
 }
 
+func isContainerNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "status=404") || strings.Contains(strings.ToLower(msg), "no such container")
+}
+
+func disableExpiredMissingUpstream(missingSince *time.Time, now time.Time) bool {
+	if missingSince == nil {
+		return false
+	}
+	return now.Sub(*missingSince) >= missingContainerGracePeriod
+}
+
 func (s *Server) refreshSiteUpstreamsFromContainer(site models.Site) (bool, models.Site, error) {
 	changed := false
+	now := time.Now()
 
 	if len(site.UpstreamContainers) < len(site.Upstreams) {
 		padded := make([]string, len(site.Upstreams))
@@ -849,6 +870,16 @@ func (s *Server) refreshSiteUpstreamsFromContainer(site models.Site) (bool, mode
 		padded := make([]string, len(site.Upstreams))
 		copy(padded, site.UpstreamNetworks)
 		site.UpstreamNetworks = padded
+	}
+	if len(site.UpstreamMissingSince) < len(site.Upstreams) {
+		padded := make([]*time.Time, len(site.Upstreams))
+		copy(padded, site.UpstreamMissingSince)
+		site.UpstreamMissingSince = padded
+	}
+	if len(site.DisabledUpstreams) < len(site.Upstreams) {
+		padded := make([]bool, len(site.Upstreams))
+		copy(padded, site.DisabledUpstreams)
+		site.DisabledUpstreams = padded
 	}
 
 	for i := range site.Upstreams {
@@ -870,7 +901,26 @@ func (s *Server) refreshSiteUpstreamsFromContainer(site models.Site) (bool, mode
 		}
 		networkIPs, err := s.Docker.ResolveContainerIPs(container)
 		if err != nil {
+			if isContainerNotFoundErr(err) {
+				if site.UpstreamMissingSince[i] == nil {
+					missingSince := now
+					site.UpstreamMissingSince[i] = &missingSince
+					changed = true
+				}
+				if disableExpiredMissingUpstream(site.UpstreamMissingSince[i], now) && !site.DisabledUpstreams[i] {
+					site.DisabledUpstreams[i] = true
+					changed = true
+				}
+			}
 			continue
+		}
+		if site.UpstreamMissingSince[i] != nil {
+			site.UpstreamMissingSince[i] = nil
+			changed = true
+		}
+		if site.DisabledUpstreams[i] {
+			site.DisabledUpstreams[i] = false
+			changed = true
 		}
 
 		newIP, newNetwork := dockerengine.PickIPFromNetworks(networkIPs, site.UpstreamNetworks[i], currentHost)
@@ -886,13 +936,14 @@ func (s *Server) refreshSiteUpstreamsFromContainer(site models.Site) (bool, mode
 	}
 
 	if changed {
-		site.UpdatedAt = time.Now()
+		site.UpdatedAt = now
 	}
 	return changed, site, nil
 }
 
 func (s *Server) refreshStreamUpstreamFromContainer(stream models.Stream) (bool, models.Stream, error) {
 	metadataChanged := false
+	now := time.Now()
 	container := strings.TrimSpace(stream.ContainerName)
 	if container == "" {
 		host, _, parseErr := upstream.ParseEndpoint(stream.Upstream)
@@ -911,7 +962,33 @@ func (s *Server) refreshStreamUpstreamFromContainer(stream models.Stream) (bool,
 	}
 	networkIPs, err := s.Docker.ResolveContainerIPs(container)
 	if err != nil {
+		if isContainerNotFoundErr(err) {
+			if stream.MissingSince == nil {
+				missingSince := now
+				stream.MissingSince = &missingSince
+				stream.UpdatedAt = now
+				return true, stream, nil
+			}
+			if disableExpiredMissingUpstream(stream.MissingSince, now) && !stream.Disabled {
+				stream.Disabled = true
+				stream.Status = "error"
+				stream.ErrorMessage = "tracked container missing for over 5 minutes; stream disabled to avoid stale IP routing"
+				stream.UpdatedAt = now
+				return true, stream, nil
+			}
+			return false, stream, nil
+		}
 		return false, stream, err
+	}
+	if stream.MissingSince != nil {
+		stream.MissingSince = nil
+		metadataChanged = true
+	}
+	if stream.Disabled {
+		stream.Disabled = false
+		stream.Status = "provisioning"
+		stream.ErrorMessage = ""
+		metadataChanged = true
 	}
 	newIP, newNetwork := dockerengine.PickIPFromNetworks(networkIPs, stream.ContainerNetwork, currentHost)
 	if newIP == "" {

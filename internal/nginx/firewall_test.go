@@ -414,3 +414,56 @@ func TestProxyForwardsPublicHostHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadBalancedConfigKeepsProxyHeadersAndUpgradeSupport(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "nginx_test_lb_headers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mgr := NewManager(tmpDir)
+	if err := mgr.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	site := &models.Site{
+		ID:        "test-lb-headers",
+		Domain:    "lb.local",
+		Upstreams: []string{"127.0.0.1:8080", "127.0.0.1:8081"},
+		LoadBalancing: &models.LoadBalancing{
+			Enabled:   true,
+			Algorithm: "least_conn",
+			Weights:   []int{1, 2},
+		},
+	}
+
+	configFile, err := mgr.GenerateConfig(site)
+	if err != nil {
+		t.Fatalf("GenerateConfig failed: %v", err)
+	}
+
+	content, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configStr := string(content)
+
+	expected := []string{
+		"upstream hubfly_upstream_test_lb_headers {",
+		"least_conn;",
+		"server 127.0.0.1:8080 weight=1;",
+		"server 127.0.0.1:8081 weight=2;",
+		"set $upstream_endpoint \"http://hubfly_upstream_test_lb_headers\";",
+		"proxy_set_header Upgrade $http_upgrade;",
+		"proxy_set_header Connection $connection_upgrade;",
+		"proxy_set_header Host $host;",
+		"proxy_set_header X-Forwarded-Host $host;",
+	}
+
+	for _, e := range expected {
+		if !strings.Contains(configStr, e) {
+			t.Fatalf("expected load-balanced config to contain %q", e)
+		}
+	}
+}

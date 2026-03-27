@@ -363,6 +363,26 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 	// Basic server block template
 	// In a real app, this might be loaded from a file.
 	const serverTmpl = `
+{{ define "proxy_common" }}
+        {{ if .HasAvailableUpstream }}
+        proxy_pass $upstream_endpoint;
+        {{ else }}
+        return 502;
+        {{ end }}
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Port $server_port;
+        {{ range $k, $v := .ProxySetHeaders }}
+        proxy_set_header {{ $k }} {{ $v }};
+        {{ end }}
+{{ end }}
+
 {{ if .Firewall }}
 {{ if .Firewall.RateLimit }}
 {{ if .Firewall.RateLimit.Enabled }}
@@ -408,23 +428,7 @@ server {
         # If we use location ~ $path, it takes precedence.
         # So we must include proxy logic inside.
         set $upstream_endpoint "{{ $.ProxyPassTarget }}";
-        {{ if $.HasAvailableUpstream }}
-        proxy_pass $upstream_endpoint;
-        {{ else }}
-        return 502;
-        {{ end }}
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Port $server_port;
-        {{ range $k, $v := $.ProxySetHeaders }}
-        proxy_set_header {{ $k }} {{ $v }};
-        {{ end }}
+        {{ template "proxy_common" $ }}
     }
     {{ end }}
     {{ end }}
@@ -460,26 +464,7 @@ server {
         {{ end }}
         {{ end }}
 
-        {{ if $.HasAvailableUpstream }}
-        proxy_pass $upstream_endpoint;
-        {{ else }}
-        return 502;
-        {{ end }}
-
-        # WebSocket Support
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Port $server_port;
-
-        {{ range $k, $v := .ProxySetHeaders }}
-        proxy_set_header {{ $k }} {{ $v }};
-        {{ end }}
+        {{ template "proxy_common" . }}
 
         {{ .TemplateSnippets }}
         {{ .ExtraConfig }}
@@ -526,23 +511,7 @@ server {
     location ~ {{ $path }} {
         if ($request_method ~* "({{ join $methods "|" }})") { return 405; }
         set $upstream_endpoint "{{ $.ProxyPassTarget }}";
-        {{ if .HasAvailableUpstream }}
-        proxy_pass $upstream_endpoint;
-        {{ else }}
-        return 502;
-        {{ end }}
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Port $server_port;
-        {{ range $k, $v := $.ProxySetHeaders }}
-        proxy_set_header {{ $k }} {{ $v }};
-        {{ end }}
+        {{ template "proxy_common" $ }}
     }
     {{ end }}
     {{ end }}
@@ -572,26 +541,7 @@ server {
         {{ end }}
         {{ end }}
 
-        {{ if .HasAvailableUpstream }}
-        proxy_pass $upstream_endpoint;
-        {{ else }}
-        return 502;
-        {{ end }}
-
-        # WebSocket Support
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Port $server_port;
-
-        {{ range $k, $v := .ProxySetHeaders }}
-        proxy_set_header {{ $k }} {{ $v }};
-        {{ end }}
+        {{ template "proxy_common" . }}
 
         {{ .TemplateSnippets }}
         {{ .ExtraConfig }}

@@ -22,6 +22,7 @@ import (
 	"github.com/hubfly/hubfly-reverse-proxy/internal/logmanager"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/models"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/nginx"
+	"github.com/hubfly/hubfly-reverse-proxy/internal/recreate"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/store"
 	"github.com/hubfly/hubfly-reverse-proxy/internal/upstream"
 )
@@ -127,6 +128,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/streams/", s.handleStreamDetail) // GET, DELETE
 	mux.HandleFunc("/v1/control/reload", s.handleManualReload)
 	mux.HandleFunc("/v1/control/full-check", s.handleManualFullCheckReload)
+	mux.HandleFunc("/v1/control/recreate", s.handleManualRecreate)
 
 	return s.loggingMiddleware(mux)
 }
@@ -1944,6 +1946,30 @@ func (s *Server) handleManualFullCheckReload(w http.ResponseWriter, r *http.Requ
 		"sites_changed":         siteCount,
 		"stream_ports_changed":  streamCount,
 		"next_scheduled_check":  time.Now().Add(upstreamSyncInterval).UTC().Format(time.RFC3339),
+		"requested_at_utc_time": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) handleManualRecreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", 405)
+		return
+	}
+
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	slog.Info("manual_recreate_requested", "request_id", requestIDFromContext(r.Context()))
+
+	result, err := recreate.Run(s.Store, s.Nginx)
+	if err != nil {
+		errorResponse(w, 500, "recreate failed: "+err.Error())
+		return
+	}
+	jsonResponse(w, 200, map[string]interface{}{
+		"status":                "recreated",
+		"sites_recreated":       result.Sites,
+		"streams_recreated":     result.Streams,
+		"stream_ports_rebuilt":  result.StreamPorts,
 		"requested_at_utc_time": time.Now().UTC().Format(time.RFC3339),
 	})
 }

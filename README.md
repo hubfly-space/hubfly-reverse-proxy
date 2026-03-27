@@ -75,6 +75,31 @@ Expected output (string only):
 v1.0.0
 ```
 
+Recreate nginx configs from stored Hubfly state:
+
+```bash
+./hubfly-reverse-proxy recreate -config-dir .
+```
+
+This command:
+- prunes stale generated `sites/*.conf`, `streams/*.conf`, and `staging/*.conf`
+- reloads site definitions from the configured store
+- rebuilds all site and stream nginx config files
+- performs one final nginx reload
+
+Store source selection:
+- `-source-store auto`: prefer SQLite if `data/http/sites.db` or `data/tcp/streams.db` exists, otherwise fall back to legacy JSON
+- `-source-store sqlite`: rebuild only from SQLite state
+- `-source-store json`: rebuild from legacy `sites.json` / `streams.json` / `metadata.json`
+
+Example recreate commands:
+
+```bash
+./hubfly-reverse-proxy recreate -config-dir . -source-store auto
+./hubfly-reverse-proxy recreate -config-dir . -source-store sqlite
+./hubfly-reverse-proxy recreate -config-dir . -source-store json
+```
+
 ## Run
 
 ```bash
@@ -119,6 +144,12 @@ or
 go run ./cmd/migrate-json-to-sqlite -input-dir <legacy_json_dir> -output-dir <hubfly_runtime_dir>
 ```
 
+After migrating legacy JSON into SQLite, rebuild clean nginx config from the migrated state:
+
+```bash
+./hubfly-reverse-proxy recreate -config-dir <hubfly_runtime_dir> -source-store sqlite
+```
+
 ## API Usage And Testing
 
 Full endpoint reference:
@@ -128,10 +159,86 @@ Base URL (default): `http://localhost:10003`
 
 Web UI URL (default): `http://localhost:10004`
 
+Load-balanced HTTP sites use the same generated proxy behavior as non-balanced sites:
+- `proxy_http_version 1.1`
+- `Upgrade` / `Connection` websocket headers
+- forwarded host/proto/port headers
+- custom `proxy_set_header` overrides
+
+That means enabling `load_balancing` changes upstream selection, not the external API shape or the proxied request header model.
+
 ### 1. Health
 
 ```bash
 curl -s http://localhost:10003/v1/health | jq
+```
+
+## Recreate Workflow
+
+Use `recreate` when:
+- generated nginx files were manually edited and you want Hubfly to own them again
+- old generated config files are left behind after experiments
+- you migrated from legacy JSON and want a clean regeneration pass
+- you changed code generation format and want all site/stream configs rewritten consistently
+
+Recommended sequence for a legacy JSON runtime:
+
+```bash
+go run ./cmd/migrate-json-to-sqlite -input-dir . -output-dir .
+./hubfly-reverse-proxy recreate -config-dir . -source-store sqlite
+```
+
+Recommended sequence for a live SQLite runtime:
+
+```bash
+./hubfly-reverse-proxy recreate -config-dir . -source-store sqlite
+```
+
+Expected output format:
+
+```text
+recreate complete: source_store=sqlite sites=3 streams=2 stream_ports=2 config_dir=/absolute/path
+```
+
+Basic recreate verification:
+
+```bash
+find ./sites -maxdepth 1 -name '*.conf' | sort
+find ./streams -maxdepth 1 -name '*.conf' | sort
+curl -s http://localhost:10003/v1/health | jq
+```
+
+API-triggered recreate from a running Hubfly instance:
+
+```bash
+curl -s -X POST http://localhost:10003/v1/control/recreate | jq
+```
+
+Example response:
+
+```json
+{
+  "status": "recreated",
+  "sites_recreated": 3,
+  "streams_recreated": 2,
+  "stream_ports_rebuilt": 2,
+  "requested_at_utc_time": "2026-03-12T10:00:00Z"
+}
+```
+
+This endpoint uses the running service's configured runtime paths automatically, so it does not need `-config-dir` or any request body.
+
+If you want to verify legacy JSON rebuild without starting the API service first:
+
+```bash
+./hubfly-reverse-proxy recreate -config-dir . -source-store json
+nginx -t -c ./nginx/nginx.conf
+```
+
+Project-level regression tests:
+
+```bash
+go test ./internal/api ./internal/nginx ./internal/recreate
 ```
 
 Example response:

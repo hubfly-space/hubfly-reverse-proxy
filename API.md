@@ -459,6 +459,27 @@ Errors:
 - `503` Docker unavailable
 - `500` full check failed
 
+### POST `/v1/control/recreate`
+
+Prunes generated Hubfly nginx config files and recreates them from stored site/stream state.
+
+This endpoint does not need a config directory in the request. It uses the runtime store and paths of the running Hubfly process.
+
+Response: `200`
+
+```json
+{
+  "status": "recreated",
+  "sites_recreated": 3,
+  "streams_recreated": 2,
+  "stream_ports_rebuilt": 2,
+  "requested_at_utc_time": "2026-03-12T10:00:00Z"
+}
+```
+
+Errors:
+- `500` recreate failed
+
 ## Validation Rules Summary
 
 - Ports must be `1-65535`.
@@ -478,3 +499,4 @@ Errors:
 - Container upstreams are resolved immediately when the site/stream is created or patched.
 - Site deletion also deletes `<site>.access.log` and `<site>.error.log`.
 - Docker full-check endpoint is stricter than normal container-name resolution: creation can work with Docker reachable even when periodic sync is disabled, but `/v1/control/full-check` still requires Docker sync mode.
+- Recreate endpoint rebuilds from the running service's configured store and runtime directories, so it is the API equivalent of `hubfly-reverse-proxy recreate`.

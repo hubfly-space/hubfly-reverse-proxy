@@ -13,7 +13,7 @@ Required tools:
 
 Optional:
 - Docker endpoint for container-name upstream resolution.
-- `-enable-docker-sync` only controls periodic resync, not initial container-name resolution.
+- `-enable-docker-sync` enables background Docker-triggered full-checks in addition to initial container-name resolution.
 
 Install stream module:
 
@@ -111,6 +111,10 @@ With Docker upstream sync enabled:
 ```bash
 ./hubfly-reverse-proxy -config-dir . -port 10003 -enable-docker-sync -docker-sock 127.0.0.1:10010
 ```
+
+When Docker sync mode is enabled, Hubfly:
+- runs a background full-check every 5 minutes
+- triggers a background full-check on Docker `start`, `restart`, and `unpause` container events
 
 Unix socket example:
 
@@ -634,7 +638,7 @@ If Docker sync is disabled, response is:
 }
 ```
 
-Container-name upstreams like `my_container:8000` still work as long as Docker is reachable via `-docker-sock`. The `-enable-docker-sync` flag is only required for hourly resync and the manual full-check endpoint.
+Container-name upstreams like `my_container:8000` still work as long as Docker is reachable via `-docker-sock`. The `-enable-docker-sync` flag enables the 5-minute background full-check loop, Docker event-triggered full-checks, and the manual full-check endpoint.
 
 ### 18. Wildcard Certificate Mapping (Optional)
 

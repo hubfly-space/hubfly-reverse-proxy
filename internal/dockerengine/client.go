@@ -1,6 +1,7 @@
 package dockerengine
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -15,9 +17,10 @@ import (
 )
 
 type Client struct {
-	Endpoint   string
-	httpClient *http.Client
-	baseURL    string
+	Endpoint     string
+	httpClient   *http.Client
+	streamClient *http.Client
+	baseURL      string
 }
 
 type Health struct {
@@ -41,6 +44,15 @@ type inspectResponse struct {
 	} `json:"NetworkSettings"`
 }
 
+type Event struct {
+	Type   string `json:"Type"`
+	Action string `json:"Action"`
+	Actor  struct {
+		ID         string            `json:"ID"`
+		Attributes map[string]string `json:"Attributes"`
+	} `json:"Actor"`
+}
+
 func NewClient(endpoint string) *Client {
 	endpoint = normalizeEndpoint(endpoint)
 
@@ -56,9 +68,10 @@ func NewClient(endpoint string) *Client {
 	}
 
 	return &Client{
-		Endpoint:   endpoint,
-		httpClient: &http.Client{Timeout: 4 * time.Second, Transport: transport},
-		baseURL:    strings.TrimRight(baseURL, "/"),
+		Endpoint:     endpoint,
+		httpClient:   &http.Client{Timeout: 4 * time.Second, Transport: transport},
+		streamClient: &http.Client{Transport: transport},
+		baseURL:      strings.TrimRight(baseURL, "/"),
 	}
 }
 
@@ -130,6 +143,62 @@ func (c *Client) ResolveContainerIPs(container string) (map[string]string, error
 	}
 	slog.Info("docker_resolve_container_ips_succeeded", "container", container, "networks", out)
 	return out, nil
+}
+
+func (c *Client) StreamContainerEvents(ctx context.Context, actions []string, onEvent func(Event)) error {
+	filters := map[string][]string{
+		"type": {"container"},
+	}
+	if len(actions) > 0 {
+		filters["event"] = actions
+	}
+	filtersJSON, err := json.Marshal(filters)
+	if err != nil {
+		return fmt.Errorf("encode docker event filters: %w", err)
+	}
+
+	query := url.Values{}
+	query.Set("filters", string(filtersJSON))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/events?"+query.Encode(), nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.streamClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("docker event stream failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("docker event stream failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	buffer := make([]byte, 0, 64*1024)
+	scanner.Buffer(buffer, 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var event Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			slog.Warn("docker_event_decode_failed", "error", err, "line", line)
+			continue
+		}
+		onEvent(event)
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("docker event stream read failed: %w", err)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return io.EOF
 }
 
 func PickIPFromNetworks(networkIPs map[string]string, preferredNetwork string, fallbackIP string) (string, string) {

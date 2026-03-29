@@ -442,6 +442,10 @@ Requirements:
 - Docker must be reachable
 - `-enable-docker-sync=true`
 
+Background behavior in Docker sync mode:
+- Hubfly runs the same full-check flow every 5 minutes
+- Hubfly also queues the same full-check flow on Docker container `start`, `restart`, and `unpause` events
+
 Response: `200`
 
 ```json
@@ -498,5 +502,5 @@ Errors:
   - final SSL refresh
 - Container upstreams are resolved immediately when the site/stream is created or patched.
 - Site deletion also deletes `<site>.access.log` and `<site>.error.log`.
-- Docker full-check endpoint is stricter than normal container-name resolution: creation can work with Docker reachable even when periodic sync is disabled, but `/v1/control/full-check` still requires Docker sync mode.
+- Docker full-check endpoint matches the background Docker sync behavior: with Docker sync enabled, the same full-check flow is run every 5 minutes and on Docker container `start`, `restart`, and `unpause` events.
 - Recreate endpoint rebuilds from the running service's configured store and runtime directories, so it is the API equivalent of `hubfly-reverse-proxy recreate`.

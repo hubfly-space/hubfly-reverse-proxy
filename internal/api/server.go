@@ -37,24 +37,25 @@ var certRetrySchedule = []time.Duration{
 }
 
 const certRetrySweepInterval = 30 * time.Second
-const upstreamSyncInterval = 1 * time.Minute
+const dockerFullCheckInterval = 5 * time.Minute
 const missingContainerGracePeriod = 5 * time.Minute
 const maxLoggedBodyBytes = 32 * 1024
 
 type requestIDContextKey struct{}
 
 type Server struct {
-	Store      store.Store
-	Nginx      *nginx.Manager
-	Certbot    *certbot.Manager
-	Docker     *dockerengine.Client
-	DockerSync bool
-	LogManager *logmanager.Manager
-	BuildInfo  BuildInfo
-	startedAt  time.Time
-	retryMu    sync.Mutex
-	retrying   map[string]bool
-	syncMu     sync.Mutex
+	Store             store.Store
+	Nginx             *nginx.Manager
+	Certbot           *certbot.Manager
+	Docker            *dockerengine.Client
+	DockerSync        bool
+	LogManager        *logmanager.Manager
+	BuildInfo         BuildInfo
+	startedAt         time.Time
+	retryMu           sync.Mutex
+	retrying          map[string]bool
+	syncMu            sync.Mutex
+	fullCheckRequests chan string
 }
 
 type BuildInfo struct {
@@ -65,18 +66,20 @@ type BuildInfo struct {
 
 func NewServer(s store.Store, n *nginx.Manager, c *certbot.Manager, d *dockerengine.Client, dockerSync bool, l *logmanager.Manager, buildInfo BuildInfo) *Server {
 	srv := &Server{
-		Store:      s,
-		Nginx:      n,
-		Certbot:    c,
-		Docker:     d,
-		DockerSync: dockerSync,
-		LogManager: l,
-		BuildInfo:  buildInfo,
-		startedAt:  time.Now(),
-		retrying:   make(map[string]bool),
+		Store:             s,
+		Nginx:             n,
+		Certbot:           c,
+		Docker:            d,
+		DockerSync:        dockerSync,
+		LogManager:        l,
+		BuildInfo:         buildInfo,
+		startedAt:         time.Now(),
+		retrying:          make(map[string]bool),
+		fullCheckRequests: make(chan string, 1),
 	}
 	go srv.certRetryLoop()
-	go srv.upstreamSyncLoop()
+	go srv.dockerSyncLoop()
+	go srv.dockerEventLoop()
 	return srv
 }
 
@@ -715,24 +718,82 @@ func (s *Server) provisionStream(stream *models.Stream) {
 	s.reconcileStreams(stream.ListenPort)
 }
 
-func (s *Server) upstreamSyncLoop() {
+func (s *Server) dockerSyncLoop() {
 	if s.Docker == nil || !s.DockerSync {
 		return
 	}
 
-	ticker := time.NewTicker(upstreamSyncInterval)
+	ticker := time.NewTicker(dockerFullCheckInterval)
 	defer ticker.Stop()
 
-	s.syncUpstreamsAndRefresh()
-	for range ticker.C {
-		s.syncUpstreamsAndRefresh()
+	s.triggerDockerFullCheck("startup")
+	for {
+		select {
+		case reason := <-s.fullCheckRequests:
+			s.runDockerFullCheck(reason)
+		case <-ticker.C:
+			s.runDockerFullCheck("interval")
+		}
 	}
 }
 
-func (s *Server) syncUpstreamsAndRefresh() {
+func (s *Server) triggerDockerFullCheck(reason string) {
+	if s.Docker == nil || !s.DockerSync {
+		return
+	}
+	select {
+	case s.fullCheckRequests <- reason:
+	default:
+	}
+}
+
+func (s *Server) runDockerFullCheck(reason string) {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
-	s.syncUpstreamsAndRefreshLocked(false)
+	reloaded, siteCount, streamCount, err := s.syncUpstreamsAndRefreshLocked(true)
+	if err != nil {
+		slog.Warn("background_full_check_failed", "reason", reason, "error", err)
+		return
+	}
+	slog.Info(
+		"background_full_check_completed",
+		"reason", reason,
+		"reloaded", reloaded,
+		"sites_changed", siteCount,
+		"stream_ports_changed", streamCount,
+	)
+}
+
+func (s *Server) dockerEventLoop() {
+	if s.Docker == nil || !s.DockerSync {
+		return
+	}
+
+	actions := []string{"start", "restart", "unpause"}
+	lastTrigger := time.Time{}
+	for {
+		err := s.Docker.StreamContainerEvents(context.Background(), actions, func(event dockerengine.Event) {
+			now := time.Now()
+			if now.Sub(lastTrigger) < 2*time.Second {
+				return
+			}
+			lastTrigger = now
+			reason := "docker_event:" + event.Action
+			slog.Info(
+				"docker_event_full_check_queued",
+				"action", event.Action,
+				"container_id", event.Actor.ID,
+				"container_name", event.Actor.Attributes["name"],
+			)
+			s.triggerDockerFullCheck(reason)
+		})
+		if err != nil {
+			slog.Warn("docker_event_stream_stopped", "error", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func (s *Server) syncUpstreamsAndRefreshLocked(forceReload bool) (bool, int, int, error) {
@@ -1945,7 +2006,7 @@ func (s *Server) handleManualFullCheckReload(w http.ResponseWriter, r *http.Requ
 		"reloaded":              reloaded,
 		"sites_changed":         siteCount,
 		"stream_ports_changed":  streamCount,
-		"next_scheduled_check":  time.Now().Add(upstreamSyncInterval).UTC().Format(time.RFC3339),
+		"next_scheduled_check":  time.Now().Add(dockerFullCheckInterval).UTC().Format(time.RFC3339),
 		"requested_at_utc_time": time.Now().UTC().Format(time.RFC3339),
 	})
 }

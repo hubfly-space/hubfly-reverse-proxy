@@ -113,8 +113,10 @@ With Docker upstream sync enabled:
 ```
 
 When Docker sync mode is enabled, Hubfly:
-- runs a background full-check every 5 minutes
-- triggers a background full-check on Docker `start`, `restart`, and `unpause` container events
+- runs a smart background full-check every 5 minutes
+- triggers the same smart background full-check on Docker `start`, `restart`, and `unpause` container events
+
+Smart full-check means Docker-backed upstreams are re-evaluated, but nginx is only reloaded if Hubfly detects an actual site or stream config change.
 
 Unix socket example:
 

@@ -109,6 +109,10 @@ Notes:
 
 Returns overall service health, build info, nginx/certbot/docker health, and store counts.
 
+Smart behavior:
+- upstreams are re-resolved from Docker
+- nginx reload happens only if site or stream config changed
+
 Response: `200`
 
 ### GET `/v1/management/version`

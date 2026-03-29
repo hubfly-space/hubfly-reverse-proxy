@@ -750,7 +750,7 @@ func (s *Server) triggerDockerFullCheck(reason string) {
 func (s *Server) runDockerFullCheck(reason string) {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
-	reloaded, siteCount, streamCount, err := s.syncUpstreamsAndRefreshLocked(true)
+	reloaded, siteCount, streamCount, err := s.syncUpstreamsAndRefreshLocked(false)
 	if err != nil {
 		slog.Warn("background_full_check_failed", "reason", reason, "error", err)
 		return
@@ -1996,7 +1996,7 @@ func (s *Server) handleManualFullCheckReload(w http.ResponseWriter, r *http.Requ
 	defer s.syncMu.Unlock()
 	slog.Info("manual_full_check_requested", "request_id", requestIDFromContext(r.Context()))
 
-	reloaded, siteCount, streamCount, err := s.syncUpstreamsAndRefreshLocked(true)
+	reloaded, siteCount, streamCount, err := s.syncUpstreamsAndRefreshLocked(false)
 	if err != nil {
 		errorResponse(w, 500, "full check failed: "+err.Error())
 		return

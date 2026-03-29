@@ -5,138 +5,119 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>403 Forbidden - Hubfly</title>
         <style>
-            @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap");
+            @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
 
             :root {
-                --bg: #fcfaf8;
-                --panel: rgba(255, 255, 255, 0.92);
-                --text: #252329;
-                --muted: #6f6a67;
-                --line: rgba(126, 96, 79, 0.12);
-                --border: rgba(126, 96, 79, 0.16);
+                --bg: #faf7f4;
+                --panel: rgba(255, 255, 255, 0.88);
+                --text: #262326;
+                --muted: #706b67;
+                --line: rgba(126, 96, 79, 0.1);
+                --border: rgba(126, 96, 79, 0.14);
                 --brand: #7e604f;
-                --brand-dark: #644b3e;
-                --accent: #889a7f;
-                --danger: #b35b48;
-                --shadow: 0 28px 80px rgba(80, 61, 49, 0.12);
+                --brand-dark: #634a3d;
+                --warn: #a35d4d;
+                --shadow: 0 22px 60px rgba(82, 63, 51, 0.1);
             }
 
-            * {
-                box-sizing: border-box;
-            }
+            * { box-sizing: border-box; }
 
             body {
                 margin: 0;
                 min-height: 100vh;
                 font-family: "Inter", sans-serif;
                 color: var(--text);
-                background-color: var(--bg);
-                background-image:
+                background:
                     linear-gradient(var(--line) 1px, transparent 1px),
                     linear-gradient(90deg, var(--line) 1px, transparent 1px),
-                    linear-gradient(45deg, transparent 48%, rgba(126, 96, 79, 0.04) 49%, rgba(126, 96, 79, 0.04) 51%, transparent 52%);
-                background-size: 28px 28px, 28px 28px, 56px 56px;
-                display: flex;
-                flex-direction: column;
-            }
-
-            .topbar {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 18px 32px;
-                border-bottom: 1px solid rgba(126, 96, 79, 0.08);
-                background: rgba(255, 255, 255, 0.8);
-                backdrop-filter: blur(8px);
-            }
-
-            .brand {
-                display: inline-flex;
-                align-items: center;
-                gap: 12px;
-                font-weight: 700;
-                font-size: 1.7rem;
-                text-decoration: none;
-                color: var(--text);
-            }
-
-            .brand-mark {
-                width: 30px;
-                height: 30px;
-                border-radius: 10px;
-                background: linear-gradient(180deg, #8fa284 0%, #73866a 100%);
-                color: white;
+                    var(--bg);
+                background-size: 28px 28px, 28px 28px, auto;
                 display: grid;
                 place-items: center;
-                font-weight: 800;
-                font-size: 1rem;
+                padding: 24px;
             }
 
             .shell {
-                width: 100%;
-                max-width: 1120px;
-                margin: 0 auto;
-                padding: 56px 24px 64px;
-                flex: 1;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-
-            .panel {
-                width: 100%;
-                max-width: 920px;
+                width: min(760px, 100%);
                 background: var(--panel);
                 border: 1px solid var(--border);
                 border-radius: 28px;
                 box-shadow: var(--shadow);
                 overflow: hidden;
+                backdrop-filter: blur(6px);
             }
 
-            .hero {
-                padding: 56px 56px 36px;
-                text-align: center;
+            .inner {
+                padding: 44px 38px 34px;
             }
 
             .eyebrow {
-                display: inline-flex;
-                align-items: center;
-                gap: 10px;
-                padding: 8px 14px;
-                border-radius: 999px;
-                background: rgba(126, 96, 79, 0.08);
-                color: var(--brand-dark);
-                font-size: 0.82rem;
-                font-weight: 600;
-                letter-spacing: 0.04em;
+                margin: 0 0 18px;
+                color: var(--brand);
+                font-size: 0.78rem;
+                font-weight: 700;
+                letter-spacing: 0.12em;
                 text-transform: uppercase;
             }
 
-            .hero h1 {
-                margin: 20px 0 10px;
-                font-size: clamp(2.4rem, 4vw, 4.2rem);
-                line-height: 0.96;
+            h1 {
+                margin: 0;
+                font-size: clamp(2.2rem, 5vw, 3.9rem);
+                line-height: 0.95;
                 letter-spacing: -0.05em;
             }
 
-            .hero h1 span {
+            h1 span {
                 display: block;
                 color: var(--brand);
             }
 
-            .hero p {
-                max-width: 660px;
-                margin: 0 auto;
+            p {
+                margin: 18px 0 0;
+                max-width: 560px;
                 color: var(--muted);
-                font-size: 1.05rem;
+                font-size: 1rem;
                 line-height: 1.75;
             }
 
+            .meta {
+                margin-top: 30px;
+                padding-top: 18px;
+                border-top: 1px solid var(--border);
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 14px 24px;
+            }
+
+            .meta div {
+                min-width: 0;
+            }
+
+            .label {
+                display: block;
+                margin-bottom: 6px;
+                color: #8d847e;
+                font-size: 0.74rem;
+                font-weight: 700;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            }
+
+            .value {
+                color: var(--text);
+                font-size: 0.98rem;
+                line-height: 1.6;
+            }
+
+            .value.status {
+                color: var(--warn);
+                font-weight: 600;
+            }
+
             .actions {
-                margin-top: 28px;
                 display: flex;
-                gap: 14px;
-                justify-content: center;
+                gap: 12px;
+                margin-top: 32px;
                 flex-wrap: wrap;
             }
 
@@ -144,24 +125,18 @@
                 display: inline-flex;
                 align-items: center;
                 justify-content: center;
-                gap: 10px;
-                min-width: 170px;
-                padding: 14px 20px;
+                min-width: 150px;
+                padding: 13px 18px;
                 border-radius: 14px;
                 border: 1px solid transparent;
                 text-decoration: none;
                 font-weight: 700;
-                transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
-            }
-
-            .button:hover {
-                transform: translateY(-1px);
+                transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
             }
 
             .button-primary {
                 background: var(--brand);
                 color: white;
-                box-shadow: 0 18px 40px rgba(126, 96, 79, 0.24);
             }
 
             .button-primary:hover {
@@ -169,151 +144,54 @@
             }
 
             .button-secondary {
+                background: transparent;
                 border-color: var(--border);
-                background: rgba(255, 255, 255, 0.72);
                 color: var(--text);
             }
 
-            .grid {
-                display: grid;
-                grid-template-columns: repeat(3, minmax(0, 1fr));
-                gap: 18px;
-                padding: 0 32px 32px;
-            }
-
-            .card {
-                min-height: 176px;
-                background: rgba(255, 255, 255, 0.72);
-                border: 1px solid var(--border);
-                border-radius: 22px;
-                padding: 24px;
-            }
-
-            .card small {
-                display: inline-flex;
-                padding: 7px 11px;
-                border-radius: 999px;
-                background: rgba(126, 96, 79, 0.08);
-                color: var(--brand-dark);
-                font-size: 0.72rem;
-                font-weight: 700;
-                letter-spacing: 0.04em;
-                text-transform: uppercase;
-            }
-
-            .card h2 {
-                margin: 16px 0 10px;
-                font-size: 1.18rem;
-            }
-
-            .card p {
-                margin: 0;
-                color: var(--muted);
-                line-height: 1.7;
-                font-size: 0.96rem;
-            }
-
-            .mono {
-                margin-top: 18px;
-                padding-top: 16px;
-                border-top: 1px solid rgba(126, 96, 79, 0.12);
-                font-family: "JetBrains Mono", monospace;
-                font-size: 0.82rem;
-                color: var(--danger);
-            }
-
             .footer {
-                display: flex;
-                justify-content: space-between;
-                gap: 12px;
-                padding: 20px 32px 28px;
-                color: #8c8580;
-                font-size: 0.76rem;
-                text-transform: uppercase;
+                padding: 16px 38px 24px;
+                color: #938982;
+                font-size: 0.74rem;
                 letter-spacing: 0.08em;
+                text-transform: uppercase;
+                border-top: 1px solid rgba(126, 96, 79, 0.08);
             }
 
-            @media (max-width: 900px) {
-                .grid {
-                    grid-template-columns: 1fr;
-                }
-
-                .hero {
-                    padding: 40px 24px 28px;
-                    text-align: left;
-                }
-
-                .hero p {
-                    margin-left: 0;
-                }
-
-                .actions {
-                    justify-content: flex-start;
-                }
-
-                .topbar {
-                    padding: 16px 18px;
-                }
-
-                .brand {
-                    font-size: 1.2rem;
-                }
+            @media (max-width: 720px) {
+                .inner { padding: 34px 22px 26px; }
+                .footer { padding: 14px 22px 22px; }
+                .meta { grid-template-columns: 1fr; }
             }
         </style>
     </head>
     <body>
-        <header class="topbar">
-            <a class="brand" href="/">
-                <span class="brand-mark">H</span>
-                <span>Hubfly space</span>
-            </a>
-        </header>
-
         <main class="shell">
-            <section class="panel">
-                <div class="hero">
-                    <div class="eyebrow">Protected Route</div>
-                    <h1>Access Blocked<span>403 Forbidden</span></h1>
-                    <p>
-                        This destination is online, but Hubfly is enforcing an access rule before the request reaches the application.
-                        Check firewall rules, upstream auth, or the route policy that protects this endpoint.
-                    </p>
-                    <div class="actions">
-                        <a class="button button-primary" href="/">Return Home</a>
-                        <a class="button button-secondary" href="javascript:history.back()">Go Back</a>
+            <section class="inner">
+                <p class="eyebrow">Hubfly Response</p>
+                <h1>Access denied<span>403 Forbidden</span></h1>
+                <p>
+                    This route is reachable, but the request was blocked before it could continue.
+                    If this is unexpected, review firewall rules, access policy, or upstream restrictions.
+                </p>
+
+                <div class="meta">
+                    <div>
+                        <span class="label">Status</span>
+                        <span class="value status">Request rejected by route protection</span>
+                    </div>
+                    <div>
+                        <span class="label">Hint</span>
+                        <span class="value">Check IP rules, blocked methods, path restrictions, or app-level auth.</span>
                     </div>
                 </div>
 
-                <div class="grid">
-                    <article class="card">
-                        <small>Status</small>
-                        <h2>Request rejected before app handoff</h2>
-                        <p>
-                            Hubfly received the request successfully, but the route policy or server access controls denied it.
-                        </p>
-                    </article>
-                    <article class="card">
-                        <small>Typical Causes</small>
-                        <h2>Firewall, path rule, or auth boundary</h2>
-                        <p>
-                            The route may be blocked by IP policy, restricted methods, path filters, or an upstream access layer.
-                        </p>
-                    </article>
-                    <article class="card">
-                        <small>Trace</small>
-                        <h2>Hubfly edge response</h2>
-                        <p>
-                            The platform is still reachable. If this is unexpected, inspect the site firewall and route configuration.
-                        </p>
-                        <div class="mono">hubfly.edge:error=forbidden code=403</div>
-                    </article>
-                </div>
-
-                <div class="footer">
-                    <span>Hubfly Route Protection</span>
-                    <span>Secure Infrastructure Control</span>
+                <div class="actions">
+                    <a class="button button-primary" href="/">Return home</a>
+                    <a class="button button-secondary" href="javascript:history.back()">Go back</a>
                 </div>
             </section>
+            <div class="footer">Infrastructure access boundary</div>
         </main>
     </body>
 </html>

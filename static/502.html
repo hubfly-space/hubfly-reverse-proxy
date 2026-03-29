@@ -3,187 +3,114 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>502 Bad Gateway - Hubfly</title>
+        <title>502 Bad Gateway</title>
         <style>
-            @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
-
+            @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap");
             :root {
                 --bg: #faf7f4;
-                --panel: rgba(255, 255, 255, 0.88);
-                --text: #262326;
-                --muted: #706b67;
-                --line: rgba(126, 96, 79, 0.1);
-                --border: rgba(126, 96, 79, 0.14);
                 --brand: #7e604f;
-                --brand-dark: #634a3d;
-                --alert: #b06a4b;
-                --shadow: 0 22px 60px rgba(82, 63, 51, 0.1);
+                --text: #262326;
+                --muted: #6f6a67;
+                --line: rgba(126, 96, 79, 0.08);
             }
-
-            * { box-sizing: border-box; }
-
+            * {
+                box-sizing: border-box;
+            }
             body {
                 margin: 0;
-                min-height: 100vh;
+                height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
                 font-family: "Inter", sans-serif;
-                color: var(--text);
-                background:
+                background-color: var(--bg);
+                background-image:
                     linear-gradient(var(--line) 1px, transparent 1px),
-                    linear-gradient(90deg, var(--line) 1px, transparent 1px),
-                    var(--bg);
-                background-size: 28px 28px, 28px 28px, auto;
-                display: grid;
-                place-items: center;
-                padding: 24px;
-            }
-
-            .shell {
-                width: min(760px, 100%);
-                background: var(--panel);
-                border: 1px solid var(--border);
-                border-radius: 28px;
-                box-shadow: var(--shadow);
+                    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+                background-size: 60px 60px;
+                color: var(--text);
                 overflow: hidden;
-                backdrop-filter: blur(6px);
+                animation: grid-pulse 10s ease-in-out infinite;
             }
 
-            .inner { padding: 44px 38px 34px; }
+            @keyframes grid-pulse {
+                0%,
+                100% {
+                    background-position: 0 0;
+                }
+                50% {
+                    background-position: 10px 10px;
+                }
+            }
 
-            .eyebrow {
-                margin: 0 0 18px;
-                color: var(--brand);
-                font-size: 0.78rem;
-                font-weight: 700;
-                letter-spacing: 0.12em;
-                text-transform: uppercase;
+            .error-wrap {
+                text-align: center;
+                position: relative;
+                animation: float 6s ease-in-out infinite;
+            }
+
+            .code {
+                font-size: clamp(8rem, 28vw, 18rem);
+                font-weight: 900;
+                line-height: 0.85;
+                margin: 0;
+                letter-spacing: -0.07em;
+                background: linear-gradient(
+                    180deg,
+                    var(--brand) 10%,
+                    var(--text) 90%
+                );
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                filter: drop-shadow(0 15px 15px rgba(0, 0, 0, 0.04));
+                user-select: none;
+            }
+
+            .message-box {
+                margin-top: -15px;
             }
 
             h1 {
+                font-size: clamp(1rem, 4vw, 1.4rem);
+                font-weight: 700;
                 margin: 0;
-                font-size: clamp(2.2rem, 5vw, 3.9rem);
-                line-height: 0.95;
-                letter-spacing: -0.05em;
-            }
-
-            h1 span {
-                display: block;
+                text-transform: uppercase;
+                letter-spacing: 0.5em;
                 color: var(--brand);
             }
 
             p {
-                margin: 18px 0 0;
-                max-width: 560px;
+                margin-top: 10px;
+                font-size: 0.95rem;
                 color: var(--muted);
-                font-size: 1rem;
-                line-height: 1.75;
+                letter-spacing: 0.01em;
+                max-width: 340px;
+                margin-left: auto;
+                margin-right: auto;
+                line-height: 1.5;
             }
 
-            .meta {
-                margin-top: 30px;
-                padding-top: 18px;
-                border-top: 1px solid var(--border);
-                display: grid;
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-                gap: 14px 24px;
-            }
-
-            .label {
-                display: block;
-                margin-bottom: 6px;
-                color: #8d847e;
-                font-size: 0.74rem;
-                font-weight: 700;
-                letter-spacing: 0.08em;
-                text-transform: uppercase;
-            }
-
-            .value {
-                color: var(--text);
-                font-size: 0.98rem;
-                line-height: 1.6;
-            }
-
-            .value.status {
-                color: var(--alert);
-                font-weight: 600;
-            }
-
-            .actions {
-                display: flex;
-                gap: 12px;
-                margin-top: 32px;
-                flex-wrap: wrap;
-            }
-
-            .button {
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                min-width: 150px;
-                padding: 13px 18px;
-                border-radius: 14px;
-                border: 1px solid transparent;
-                text-decoration: none;
-                font-weight: 700;
-                transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
-            }
-
-            .button-primary {
-                background: var(--brand);
-                color: white;
-            }
-
-            .button-primary:hover { background: var(--brand-dark); }
-
-            .button-secondary {
-                background: transparent;
-                border-color: var(--border);
-                color: var(--text);
-            }
-
-            .footer {
-                padding: 16px 38px 24px;
-                color: #938982;
-                font-size: 0.74rem;
-                letter-spacing: 0.08em;
-                text-transform: uppercase;
-                border-top: 1px solid rgba(126, 96, 79, 0.08);
-            }
-
-            @media (max-width: 720px) {
-                .inner { padding: 34px 22px 26px; }
-                .footer { padding: 14px 22px 22px; }
-                .meta { grid-template-columns: 1fr; }
+            @keyframes float {
+                0%,
+                100% {
+                    transform: translateY(0);
+                }
+                50% {
+                    transform: translateY(-12px);
+                }
             }
         </style>
     </head>
     <body>
-        <main class="shell">
-            <section class="inner">
-                <p class="eyebrow">Hubfly Response</p>
-                <h1>Upstream unavailable<span>502 Bad Gateway</span></h1>
+        <main class="error-wrap">
+            <div class="code">502</div>
+            <div class="message-box">
+                <h1>Bad Gateway</h1>
                 <p>
-                    Hubfly received the request, but the application behind this route did not return a valid upstream response.
-                    The workload may still be starting, restarting, or unavailable on the configured port.
+                    The server encountered a temporary error and could not
+                    complete your request.
                 </p>
-
-                <div class="meta">
-                    <div>
-                        <span class="label">Status</span>
-                        <span class="value status">Gateway could not complete the upstream request</span>
-                    </div>
-                    <div>
-                        <span class="label">Hint</span>
-                        <span class="value">Check application health, restart state, runtime logs, or upstream port mapping.</span>
-                    </div>
-                </div>
-
-                <div class="actions">
-                    <a class="button button-primary" href="javascript:location.reload()">Try again</a>
-                    <a class="button button-secondary" href="/">Return home</a>
-                </div>
-            </section>
-            <div class="footer">Application gateway boundary</div>
+            </div>
         </main>
     </body>
 </html>

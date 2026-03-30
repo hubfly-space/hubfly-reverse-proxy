@@ -2,6 +2,7 @@ package dockerengine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,20 @@ func TestStreamContainerEventsFiltersAndParsesEvents(t *testing.T) {
 		if filters == "" {
 			t.Fatalf("expected filters query parameter")
 		}
+		var decoded map[string][]string
+		if err := json.Unmarshal([]byte(filters), &decoded); err != nil {
+			t.Fatalf("expected valid filters json: %v", err)
+		}
+		events := decoded["event"]
+		expected := map[string]bool{"start": true, "restart": true, "unpause": true, "stop": true}
+		if len(events) != len(expected) {
+			t.Fatalf("expected %d event filters, got %d (%v)", len(expected), len(events), events)
+		}
+		for _, action := range events {
+			if !expected[action] {
+				t.Fatalf("unexpected event filter %q", action)
+			}
+		}
 		fmt.Fprintln(w, `{"Type":"container","Action":"start","Actor":{"ID":"abc123","Attributes":{"name":"app"}}}`)
 	}))
 	defer ts.Close()
@@ -27,7 +42,7 @@ func TestStreamContainerEventsFiltersAndParsesEvents(t *testing.T) {
 	defer cancel()
 
 	received := make([]Event, 0, 1)
-	err := client.StreamContainerEvents(ctx, []string{"start", "restart", "unpause"}, func(event Event) {
+	err := client.StreamContainerEvents(ctx, []string{"start", "restart", "unpause", "stop"}, func(event Event) {
 		received = append(received, event)
 		cancel()
 	})

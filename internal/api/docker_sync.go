@@ -66,7 +66,7 @@ func (s *Server) dockerEventLoop() {
 		return
 	}
 
-	actions := []string{"start", "restart", "unpause"}
+	actions := []string{"start", "restart", "unpause", "stop"}
 	lastTrigger := time.Time{}
 	for {
 		err := s.Docker.StreamContainerEvents(context.Background(), actions, func(event dockerengine.Event) {

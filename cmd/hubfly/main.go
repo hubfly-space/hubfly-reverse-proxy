@@ -58,7 +58,7 @@ func main() {
 	appLogRetention := flag.String("app-log-retention", "168h", "Retention for Hubfly runtime logs (Go duration, e.g. 168h)")
 	appLogCleanupInterval := flag.String("app-log-cleanup-interval", "1h", "Cleanup interval for Hubfly runtime logs (Go duration)")
 	dockerSock := flag.String("docker-sock", "127.0.0.1:10010", "Docker engine endpoint. Supports tcp host:port, http(s)://host:port, unix:///path, or /path/to/socket")
-	enableDockerSync := flag.Bool("enable-docker-sync", false, "Enable Docker-based upstream resolution/sync")
+	enableDockerSync := flag.Bool("enable-docker-sync", true, "Enable Docker-based upstream resolution/sync")
 	flag.Parse()
 
 	baseDir, err := filepath.Abs(strings.TrimSpace(*configDir))

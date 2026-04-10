@@ -54,6 +54,7 @@ type Manager struct {
 	WebrootDir    string
 	StaticDir     string
 	LogsDir       string
+	CacheDir      string
 	PIDFile       string
 	WildcardCerts []WildcardCertificate
 }
@@ -133,6 +134,7 @@ func NewManager(baseDir string, opts ...Options) *Manager {
 		WebrootDir:    cfg.WebrootDir,
 		StaticDir:     cfg.StaticDir,
 		LogsDir:       cfg.LogsDir,
+		CacheDir:      filepath.Join(filepath.Dir(cfg.LogsDir), "cache", "nginx"),
 		PIDFile:       cfg.PIDFile,
 		WildcardCerts: cfg.WildcardCerts,
 	}
@@ -148,7 +150,7 @@ func (m *Manager) EnsureDirs() error {
 		m.WebrootDir,
 		m.StaticDir,
 		m.LogsDir,
-		filepath.Join(filepath.Dir(m.LogsDir), "cache", "nginx"),
+		m.CacheDir,
 		filepath.Dir(m.PIDFile),
 	}
 	for _, d := range dirs {
@@ -265,6 +267,28 @@ func (m *Manager) Reload() error {
 	}
 	slog.Info("nginx_reload_succeeded", "duration", time.Since(start), "output", string(out))
 	return m.EnsureRunning()
+}
+
+func (m *Manager) PurgeCache() error {
+	dir := strings.TrimSpace(m.CacheDir)
+	if dir == "" || dir == "/" || dir == "." {
+		return fmt.Errorf("invalid cache dir: %q", dir)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.MkdirAll(dir, 0755)
+		}
+		return err
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Manager) resolveBinary() (string, error) {
@@ -390,7 +414,7 @@ func (m *Manager) ensureMainConfigPaths() error {
 	updated = strings.ReplaceAll(updated, "/etc/hubfly/streams/*.conf", filepath.ToSlash(filepath.Join(m.StreamsDir, "*.conf")))
 	updated = strings.ReplaceAll(updated, "/var/www/hubfly/static", filepath.ToSlash(m.StaticDir))
 	updated = strings.ReplaceAll(updated, "/var/log/hubfly/access.log", filepath.ToSlash(filepath.Join(m.LogsDir, "access.log")))
-	updated = strings.ReplaceAll(updated, "/var/cache/nginx", filepath.ToSlash(filepath.Join(filepath.Dir(m.LogsDir), "cache", "nginx")))
+	updated = strings.ReplaceAll(updated, "/var/cache/nginx", filepath.ToSlash(m.CacheDir))
 	updated = ensureServerNameHashConfig(updated)
 	updated = strings.ReplaceAll(updated, "ssl_reject_handshake on;", fmt.Sprintf("ssl_certificate %s;\n        ssl_certificate_key %s;\n        return 444;", filepath.ToSlash(m.FallbackCert), filepath.ToSlash(m.FallbackKey)))
 	updated = strings.ReplaceAll(updated, "listen 82;", "listen 10004;")
@@ -407,9 +431,9 @@ func (m *Manager) ensureMainConfigPaths() error {
 	errLogPattern := regexp.MustCompile(`(?m)^\s*error_log\s+[^;]+;\s*$`)
 	errorLogPath := filepath.ToSlash(filepath.Join(m.LogsDir, "nginx.error.log"))
 	if errLogPattern.MatchString(updated) {
-		updated = errLogPattern.ReplaceAllString(updated, fmt.Sprintf("error_log %s notice;", errorLogPath))
+		updated = errLogPattern.ReplaceAllString(updated, fmt.Sprintf("error_log %s warn;", errorLogPath))
 	} else {
-		updated = fmt.Sprintf("error_log %s notice;\n%s", errorLogPath, updated)
+		updated = fmt.Sprintf("error_log %s warn;\n%s", errorLogPath, updated)
 	}
 
 	runtimeUser := discoverRuntimeUser(m.NginxConf)

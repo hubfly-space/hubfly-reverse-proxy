@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -85,6 +88,10 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[len("/v1/sites/"):]
 	if id == "" {
 		http.NotFound(w, r)
+		return
+	}
+	if strings.HasSuffix(id, "/logs/stream") {
+		s.handleSiteLogsStream(w, r, strings.TrimSuffix(id, "/logs/stream"))
 		return
 	}
 	if strings.HasSuffix(id, "/logs") {
@@ -437,6 +444,202 @@ func (s *Server) handleSiteLogs(w http.ResponseWriter, r *http.Request, siteID s
 		return
 	}
 	jsonResponse(w, http.StatusOK, logs)
+}
+
+func (s *Server) handleSiteLogsStream(w http.ResponseWriter, r *http.Request, siteID string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.LogManager == nil {
+		errorResponse(w, http.StatusServiceUnavailable, "log manager not available")
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		errorResponse(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	logType := r.URL.Query().Get("type")
+	if logType == "" {
+		logType = "access"
+	}
+	limit := 100
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil {
+			limit = l
+		}
+	}
+	search := r.URL.Query().Get("search")
+	var since time.Time
+	if t := r.URL.Query().Get("since"); t != "" {
+		since, _ = time.Parse(time.RFC3339, t)
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	send := func(data interface{}) bool {
+		payload, err := json.Marshal(data)
+		if err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return false
+		}
+		if _, err := w.Write(payload); err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("\n\n")); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	// Optional backfill
+	if !since.IsZero() {
+		opts := logmanager.LogOptions{Limit: limit, Since: since, Search: search}
+		if logType == "error" {
+			logs, err := s.LogManager.GetErrorLogs(siteID, opts)
+			if err != nil {
+				errorResponse(w, http.StatusInternalServerError, "failed to read error logs: "+err.Error())
+				return
+			}
+			for i := len(logs) - 1; i >= 0; i-- {
+				if !send(logs[i]) {
+					return
+				}
+			}
+		} else {
+			logs, err := s.LogManager.GetAccessLogs(siteID, opts)
+			if err != nil {
+				errorResponse(w, http.StatusInternalServerError, "failed to read access logs: "+err.Error())
+				return
+			}
+			for i := len(logs) - 1; i >= 0; i-- {
+				if !send(logs[i]) {
+					return
+				}
+			}
+		}
+	}
+
+	logPath := s.LogManager.AccessLogPath(siteID)
+	if logType == "error" {
+		logPath = s.LogManager.ErrorLogPath(siteID)
+	}
+
+	ctx := r.Context()
+	var file *os.File
+	openFile := func() (*os.File, error) {
+		for {
+			f, err := os.Open(logPath)
+			if err == nil {
+				return f, nil
+			}
+			if !os.IsNotExist(err) {
+				return nil, err
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
+	}
+
+	var err error
+	file, err = openFile()
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "failed to open log file: "+err.Error())
+		return
+	}
+	defer file.Close()
+
+	if since.IsZero() {
+		if _, err := file.Seek(0, io.SeekEnd); err != nil {
+			errorResponse(w, http.StatusInternalServerError, "failed to seek log file: "+err.Error())
+			return
+		}
+	}
+
+	reader := bufio.NewReader(file)
+	keepalive := time.NewTicker(15 * time.Second)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-keepalive.C:
+			if _, err := w.Write([]byte(":\n\n")); err != nil {
+				return
+			}
+			flusher.Flush()
+		default:
+		}
+
+		line, err := reader.ReadString('\n')
+		if err == io.EOF {
+			if info, statErr := file.Stat(); statErr == nil {
+				pos, _ := file.Seek(0, io.SeekCurrent)
+				if info.Size() < pos {
+					_, _ = file.Seek(0, io.SeekStart)
+					reader.Reset(file)
+				}
+			}
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		if err != nil {
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+
+		line = strings.TrimRight(line, "\n")
+		if line == "" {
+			continue
+		}
+		if search != "" && !strings.Contains(line, search) {
+			continue
+		}
+
+		if logType == "error" {
+			entry, ok := logmanager.ParseErrorLogLine(line)
+			if ok {
+				if !since.IsZero() && !entry.TimeLocal.IsZero() && entry.TimeLocal.Before(since) {
+					continue
+				}
+				if !send(entry) {
+					return
+				}
+				continue
+			}
+			if !send(map[string]string{"raw": line}) {
+				return
+			}
+			continue
+		}
+
+		entry, ok := logmanager.ParseAccessLogLine(line)
+		if ok {
+			if !since.IsZero() && entry.TimeLocal.Before(since) {
+				continue
+			}
+			if !send(entry) {
+				return
+			}
+			continue
+		}
+		if !send(map[string]string{"raw": line}) {
+			return
+		}
+	}
 }
 
 func (s *Server) handleSiteCertRetry(w http.ResponseWriter, r *http.Request, siteID string) {

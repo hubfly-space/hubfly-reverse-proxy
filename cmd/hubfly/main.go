@@ -57,6 +57,9 @@ func main() {
 	appLogDir := flag.String("app-log-dir", "", "Directory for Hubfly runtime logs (default: <config-dir>/logs/runtime)")
 	appLogRetention := flag.String("app-log-retention", "168h", "Retention for Hubfly runtime logs (Go duration, e.g. 168h)")
 	appLogCleanupInterval := flag.String("app-log-cleanup-interval", "1h", "Cleanup interval for Hubfly runtime logs (Go duration)")
+	appLogLevel := flag.String("app-log-level", "warn", "Hubfly app log level: debug, info, warn, error")
+	siteLogRetention := flag.String("site-log-retention", "168h", "Retention for per-site nginx logs (Go duration, e.g. 168h)")
+	siteLogRotateInterval := flag.String("site-log-rotate-interval", "1h", "Rotation check interval for per-site nginx logs (Go duration)")
 	dockerSock := flag.String("docker-sock", "127.0.0.1:10010", "Docker engine endpoint. Supports tcp host:port, http(s)://host:port, unix:///path, or /path/to/socket")
 	enableDockerSync := flag.Bool("enable-docker-sync", true, "Enable Docker-based upstream resolution/sync")
 	flag.Parse()
@@ -101,10 +104,26 @@ func main() {
 		fmt.Fprintf(os.Stderr, "invalid -app-log-cleanup-interval value %q: %v\n", *appLogCleanupInterval, err)
 		os.Exit(1)
 	}
+	level, err := applog.ParseLevel(*appLogLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -app-log-level value %q: %v\n", *appLogLevel, err)
+		os.Exit(1)
+	}
+	siteRetention, err := time.ParseDuration(strings.TrimSpace(*siteLogRetention))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -site-log-retention value %q: %v\n", *siteLogRetention, err)
+		os.Exit(1)
+	}
+	siteRotateInterval, err := time.ParseDuration(strings.TrimSpace(*siteLogRotateInterval))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -site-log-rotate-interval value %q: %v\n", *siteLogRotateInterval, err)
+		os.Exit(1)
+	}
 	stopAppLogger, err := applog.Setup(applog.Options{
 		Dir:             *appLogDir,
 		Retention:       retention,
 		CleanupInterval: cleanupInterval,
+		Level:           level,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to initialize app logger: %v\n", err)
@@ -119,8 +138,11 @@ func main() {
 		"docker_sock", *dockerSock,
 		"docker_sync_enabled", *enableDockerSync,
 		"app_log_dir", *appLogDir,
+		"app_log_level", strings.ToLower(strings.TrimSpace(*appLogLevel)),
 		"app_log_retention", retention.String(),
 		"app_log_cleanup_interval", cleanupInterval.String(),
+		"site_log_retention", siteRetention.String(),
+		"site_log_rotate_interval", siteRotateInterval.String(),
 	)
 
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
@@ -181,6 +203,15 @@ func main() {
 
 	dockerClient := dockerengine.NewClient(*dockerSock)
 	lm := logmanager.NewManager(*logsDir)
+	stopLogRetention, err := lm.StartRetention(logmanager.RetentionOptions{
+		Retention:      siteRetention,
+		RotateInterval: siteRotateInterval,
+	})
+	if err != nil {
+		slog.Warn("Failed to start site log retention", "error", err)
+	} else {
+		defer stopLogRetention()
+	}
 
 	srv := api.NewServer(st, nm, cm, dockerClient, *enableDockerSync, lm, api.BuildInfo{
 		Version:   appVersion,

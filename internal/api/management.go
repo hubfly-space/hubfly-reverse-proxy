@@ -82,6 +82,26 @@ func (s *Server) handleManualRecreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleManualCachePurge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	slog.Info("manual_cache_purge_requested", "request_id", requestIDFromContext(r.Context()))
+
+	if err := s.Nginx.PurgeCache(); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "cache purge failed: "+err.Error())
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"status": "cache_purged",
+		"time":   time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
 func jsonResponse(w http.ResponseWriter, code int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

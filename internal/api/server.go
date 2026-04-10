@@ -114,5 +114,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/control/reload", s.handleManualReload)
 	mux.HandleFunc("/v1/control/full-check", s.handleManualFullCheckReload)
 	mux.HandleFunc("/v1/control/recreate", s.handleManualRecreate)
+	mux.HandleFunc("/v1/control/cache/purge", s.handleManualCachePurge)
 	return s.loggingMiddleware(mux)
 }

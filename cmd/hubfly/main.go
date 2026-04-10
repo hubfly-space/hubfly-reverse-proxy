@@ -36,7 +36,7 @@ func main() {
 	}
 	if len(os.Args) >= 2 && strings.TrimSpace(os.Args[1]) == "recreate" {
 		if err := runRecreate(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "recreate failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Recreate failed: %v\n", err)
 			os.Exit(1)
 		}
 		return

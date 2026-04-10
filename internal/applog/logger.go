@@ -21,6 +21,7 @@ type Options struct {
 	Prefix          string
 	Retention       time.Duration
 	CleanupInterval time.Duration
+	Level           slog.Leveler
 }
 
 type bootFileWriter struct {
@@ -78,8 +79,12 @@ func Setup(opts Options) (func(), error) {
 	bootLogFile := filepath.Join(opts.Dir, fmt.Sprintf("%s-%s.log", opts.Prefix, bootStamp))
 	writer := newBootFileWriter(bootLogFile)
 
+	level := opts.Level
+	if level == nil {
+		level = slog.LevelWarn
+	}
 	handler := slog.NewJSONHandler(io.MultiWriter(os.Stdout, writer), &slog.HandlerOptions{
-		Level:     slog.LevelDebug,
+		Level:     level,
 		AddSource: true,
 	})
 	slog.SetDefault(slog.New(handler))
@@ -147,5 +152,21 @@ func cleanupOldFiles(dir, prefix string, retention time.Duration, currentFile st
 			continue
 		}
 		slog.Info("removed old app log file", "file", path, "retention", retention.String())
+	}
+}
+
+// ParseLevel converts a string log level to slog.Level.
+func ParseLevel(input string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelWarn, fmt.Errorf("invalid log level %q", input)
 	}
 }

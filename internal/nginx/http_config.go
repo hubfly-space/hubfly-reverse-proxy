@@ -164,8 +164,10 @@ server {
     listen 80;
     server_name {{ .Domain }};
 
-    access_log {{ .LogsDir }}/{{ .ID }}.access.log hubfly;
-    error_log {{ .LogsDir }}/{{ .ID }}.error.log notice;
+    access_log {{ .LogsDir }}/{{ .ID }}.access.log hubfly if=$hubfly_loggable;
+    error_log {{ .LogsDir }}/{{ .ID }}.error.log warn;
+
+
 
     {{ if .Firewall }}
     {{ if .Firewall.BlockRules }}
@@ -236,6 +238,9 @@ server {
     listen 443 ssl;
     http2 on;
     server_name {{ .Domain }};
+
+    access_log {{ .LogsDir }}/{{ .ID }}.access.log hubfly if=$hubfly_loggable;
+    error_log {{ .LogsDir }}/{{ .ID }}.error.log warn;
 
     ssl_certificate {{ .SSLCertificate }};
     ssl_certificate_key {{ .SSLKey }};

@@ -431,9 +431,9 @@ func (m *Manager) ensureMainConfigPaths() error {
 	errLogPattern := regexp.MustCompile(`(?m)^\s*error_log\s+[^;]+;\s*$`)
 	errorLogPath := filepath.ToSlash(filepath.Join(m.LogsDir, "nginx.error.log"))
 	if errLogPattern.MatchString(updated) {
-		updated = errLogPattern.ReplaceAllString(updated, fmt.Sprintf("error_log %s warn;", errorLogPath))
+		updated = errLogPattern.ReplaceAllString(updated, fmt.Sprintf("error_log %s notice;", errorLogPath))
 	} else {
-		updated = fmt.Sprintf("error_log %s warn;\n%s", errorLogPath, updated)
+		updated = fmt.Sprintf("error_log %s notice;\n%s", errorLogPath, updated)
 	}
 
 	runtimeUser := discoverRuntimeUser(m.NginxConf)

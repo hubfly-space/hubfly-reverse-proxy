@@ -164,13 +164,6 @@ server {
     listen 80;
     server_name {{ .Domain }};
 
-    set $hubfly_loggable 1;
-    if ($hubfly_log_noise) { set $hubfly_loggable 0; }
-    if ($hubfly_log_error) { set $hubfly_loggable 1; }
-
-    access_log {{ .LogsDir }}/{{ .ID }}.access.log hubfly if=$hubfly_loggable;
-    error_log {{ .LogsDir }}/{{ .ID }}.error.log warn;
-
 
 
     {{ if .Firewall }}
@@ -242,13 +235,6 @@ server {
     listen 443 ssl;
     http2 on;
     server_name {{ .Domain }};
-
-    set $hubfly_loggable 1;
-    if ($hubfly_log_noise) { set $hubfly_loggable 0; }
-    if ($hubfly_log_error) { set $hubfly_loggable 1; }
-
-    access_log {{ .LogsDir }}/{{ .ID }}.access.log hubfly if=$hubfly_loggable;
-    error_log {{ .LogsDir }}/{{ .ID }}.error.log warn;
 
     ssl_certificate {{ .SSLCertificate }};
     ssl_certificate_key {{ .SSLKey }};

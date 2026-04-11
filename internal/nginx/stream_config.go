@@ -41,7 +41,6 @@ map $remote_addr ${{ .MapName }} {
 
 server {
     listen {{ .ListenPort }}{{ .Proto }};
-    listen [::]:{{ .ListenPort }}{{ .Proto }};
     proxy_pass ${{ .MapName }};
 }
 `

@@ -80,6 +80,12 @@ func (rw *responseWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func requestIDFromContext(ctx context.Context) string {
 	v := ctx.Value(requestIDContextKey{})
 	if s, ok := v.(string); ok {

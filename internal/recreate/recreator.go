@@ -14,6 +14,7 @@ import (
 
 type Result struct {
 	Sites       int
+	Redirects   int
 	Streams     int
 	StreamPorts int
 }
@@ -42,6 +43,12 @@ func Run(st store.Store, nm *nginx.Manager) (Result, error) {
 
 	for i := range sites {
 		site := sites[i]
+		if strings.TrimSpace(site.ActiveConfig) != "" {
+			if err := nm.ApplyRenderedNoReload(site.ID, []byte(site.ActiveConfig)); err != nil {
+				return Result{}, fmt.Errorf("apply active site config for %s: %w", site.ID, err)
+			}
+			continue
+		}
 		configFile, err := nm.GenerateConfig(&site)
 		if err != nil {
 			return Result{}, fmt.Errorf("generate site config for %s: %w", site.ID, err)
@@ -51,6 +58,33 @@ func Run(st store.Store, nm *nginx.Manager) (Result, error) {
 		}
 		if err := nm.ApplyNoReload(site.ID, configFile); err != nil {
 			return Result{}, fmt.Errorf("apply site config for %s: %w", site.ID, err)
+		}
+	}
+
+	redirects, err := st.ListRedirects()
+	if err != nil {
+		return Result{}, fmt.Errorf("list redirects: %w", err)
+	}
+	sort.Slice(redirects, func(i, j int) bool {
+		return strings.TrimSpace(redirects[i].ID) < strings.TrimSpace(redirects[j].ID)
+	})
+	for i := range redirects {
+		redirect := redirects[i]
+		if strings.TrimSpace(redirect.ActiveConfig) != "" {
+			if err := nm.ApplyRenderedNoReload(redirect.ID, []byte(redirect.ActiveConfig)); err != nil {
+				return Result{}, fmt.Errorf("apply active redirect config for %s: %w", redirect.ID, err)
+			}
+			continue
+		}
+		configFile, err := nm.GenerateRedirectConfig(&redirect)
+		if err != nil {
+			return Result{}, fmt.Errorf("generate redirect config for %s: %w", redirect.ID, err)
+		}
+		if err := nm.Validate(configFile); err != nil {
+			return Result{}, fmt.Errorf("validate redirect config for %s: %w", redirect.ID, err)
+		}
+		if err := nm.ApplyNoReload(redirect.ID, configFile); err != nil {
+			return Result{}, fmt.Errorf("apply redirect config for %s: %w", redirect.ID, err)
 		}
 	}
 
@@ -83,6 +117,7 @@ func Run(st store.Store, nm *nginx.Manager) (Result, error) {
 
 	return Result{
 		Sites:       len(sites),
+		Redirects:   len(redirects),
 		Streams:     len(streams),
 		StreamPorts: len(ports),
 	}, nil

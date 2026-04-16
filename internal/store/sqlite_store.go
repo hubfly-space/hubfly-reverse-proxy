@@ -43,6 +43,10 @@ func NewSQLiteStore(baseDir string) (*SQLiteStore, error) {
 		_ = httpDB.Close()
 		return nil, err
 	}
+	if err := initSQLiteDB(httpDB, "redirects"); err != nil {
+		_ = httpDB.Close()
+		return nil, err
+	}
 
 	tcpDB, err := sql.Open("sqlite", tcpDBPath)
 	if err != nil {
@@ -158,6 +162,73 @@ func (s *SQLiteStore) DeleteSite(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.httpDB.Exec(`DELETE FROM sites WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) ListRedirects() ([]models.Redirect, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.httpDB.Query(`SELECT payload FROM redirects`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]models.Redirect, 0)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var redirect models.Redirect
+		if err := json.Unmarshal([]byte(payload), &redirect); err != nil {
+			return nil, fmt.Errorf("decode redirect payload: %w", err)
+		}
+		out = append(out, redirect)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) GetRedirect(id string) (*models.Redirect, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var payload string
+	err := s.httpDB.QueryRow(`SELECT payload FROM redirects WHERE id = ?`, id).Scan(&payload)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("redirect not found: %s", id)
+		}
+		return nil, err
+	}
+	var redirect models.Redirect
+	if err := json.Unmarshal([]byte(payload), &redirect); err != nil {
+		return nil, fmt.Errorf("decode redirect payload: %w", err)
+	}
+	return &redirect, nil
+}
+
+func (s *SQLiteStore) SaveRedirect(redirect *models.Redirect) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	payload, err := json.Marshal(redirect)
+	if err != nil {
+		return err
+	}
+	_, err = s.httpDB.Exec(
+		`INSERT INTO redirects (id, payload, updated_at) VALUES (?, ?, datetime('now'))
+		 ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at`,
+		redirect.ID, string(payload),
+	)
+	return err
+}
+
+func (s *SQLiteStore) DeleteRedirect(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.httpDB.Exec(`DELETE FROM redirects WHERE id = ?`, id)
 	return err
 }
 

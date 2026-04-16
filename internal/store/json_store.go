@@ -17,6 +17,11 @@ type Store interface {
 	SaveSite(site *models.Site) error
 	DeleteSite(id string) error
 
+	ListRedirects() ([]models.Redirect, error)
+	GetRedirect(id string) (*models.Redirect, error)
+	SaveRedirect(redirect *models.Redirect) error
+	DeleteRedirect(id string) error
+
 	ListStreams() ([]models.Stream, error)
 	GetStream(id string) (*models.Stream, error)
 	SaveStream(stream *models.Stream) error
@@ -26,9 +31,11 @@ type Store interface {
 type JSONStore struct {
 	sitesFilePath       string
 	legacySitesFilePath string
+	redirectsFilePath   string
 	streamsFilePath     string
 	mu                  sync.RWMutex
 	sites               map[string]models.Site
+	redirects           map[string]models.Redirect
 	streams             map[string]models.Stream
 }
 
@@ -39,8 +46,10 @@ func NewJSONStore(dir string) (*JSONStore, error) {
 	s := &JSONStore{
 		sitesFilePath:       filepath.Join(dir, "sites.json"),
 		legacySitesFilePath: filepath.Join(dir, "metadata.json"),
+		redirectsFilePath:   filepath.Join(dir, "redirects.json"),
 		streamsFilePath:     filepath.Join(dir, "streams.json"),
 		sites:               make(map[string]models.Site),
+		redirects:           make(map[string]models.Redirect),
 		streams:             make(map[string]models.Stream),
 	}
 
@@ -76,6 +85,12 @@ func (s *JSONStore) load() error {
 		}
 	}
 
+	if data, err := os.ReadFile(s.redirectsFilePath); err == nil && len(data) > 0 {
+		if err := json.Unmarshal(data, &s.redirects); err != nil {
+			return fmt.Errorf("failed to load redirects: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -93,6 +108,14 @@ func (s *JSONStore) saveStreams() error {
 		return err
 	}
 	return os.WriteFile(s.streamsFilePath, data, 0644)
+}
+
+func (s *JSONStore) saveRedirects() error {
+	data, err := json.MarshalIndent(s.redirects, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.redirectsFilePath, data, 0644)
 }
 
 func (s *JSONStore) ListSites() ([]models.Site, error) {
@@ -138,6 +161,52 @@ func (s *JSONStore) DeleteSite(id string) error {
 		return err
 	}
 	slog.Info("json_store_delete_site_succeeded", "site_id", id)
+	return nil
+}
+
+func (s *JSONStore) ListRedirects() ([]models.Redirect, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]models.Redirect, 0, len(s.redirects))
+	for _, redirect := range s.redirects {
+		list = append(list, redirect)
+	}
+	return list, nil
+}
+
+func (s *JSONStore) GetRedirect(id string) (*models.Redirect, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	redirect, ok := s.redirects[id]
+	if !ok {
+		return nil, fmt.Errorf("redirect not found: %s", id)
+	}
+	return &redirect, nil
+}
+
+func (s *JSONStore) SaveRedirect(redirect *models.Redirect) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.redirects[redirect.ID] = *redirect
+	if err := s.saveRedirects(); err != nil {
+		slog.Error("json_store_save_redirect_failed", "redirect_id", redirect.ID, "error", err)
+		return err
+	}
+	slog.Info("json_store_save_redirect_succeeded", "redirect_id", redirect.ID, "source_domain", redirect.SourceDomain, "target_domain", redirect.TargetDomain, "status", redirect.Status)
+	return nil
+}
+
+func (s *JSONStore) DeleteRedirect(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.redirects, id)
+	if err := s.saveRedirects(); err != nil {
+		slog.Error("json_store_delete_redirect_failed", "redirect_id", id, "error", err)
+		return err
+	}
+	slog.Info("json_store_delete_redirect_succeeded", "redirect_id", id)
 	return nil
 }
 

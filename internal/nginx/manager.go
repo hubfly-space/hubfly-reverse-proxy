@@ -202,13 +202,24 @@ func (m *Manager) ApplyNoReload(siteID, stagingFile string) error {
 	return m.apply(siteID, stagingFile, false)
 }
 
+func (m *Manager) ApplyRendered(siteID string, config []byte) error {
+	return m.applyBytes(siteID, config, true)
+}
+
+func (m *Manager) ApplyRenderedNoReload(siteID string, config []byte) error {
+	return m.applyBytes(siteID, config, false)
+}
+
 func (m *Manager) apply(siteID, stagingFile string, reload bool) error {
-	target := filepath.Join(m.SitesDir, siteID+".conf")
 	stagingData, err := os.ReadFile(stagingFile)
 	if err != nil {
 		return err
 	}
+	return m.applyBytes(siteID, stagingData, reload)
+}
 
+func (m *Manager) applyBytes(siteID string, stagingData []byte, reload bool) error {
+	target := filepath.Join(m.SitesDir, siteID+".conf")
 	var previousData []byte
 	previousExists := false
 	if b, err := os.ReadFile(target); err == nil {
@@ -238,9 +249,6 @@ func (m *Manager) apply(siteID, stagingFile string, reload bool) error {
 			restorePrevious()
 			return err
 		}
-	}
-	if err := os.Remove(stagingFile); err != nil && !os.IsNotExist(err) {
-		slog.Warn("Failed to remove staging config", "file", stagingFile, "error", err)
 	}
 	slog.Info("Applied site config", "site_id", siteID, "target", target)
 	return nil

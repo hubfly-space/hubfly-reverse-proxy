@@ -76,6 +76,7 @@ func (s *Server) handleManualRecreate(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"status":                "recreated",
 		"sites_recreated":       result.Sites,
+		"redirects_recreated":   result.Redirects,
 		"streams_recreated":     result.Streams,
 		"stream_ports_rebuilt":  result.StreamPorts,
 		"requested_at_utc_time": time.Now().UTC().Format(time.RFC3339),

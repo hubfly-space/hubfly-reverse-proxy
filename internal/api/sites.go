@@ -55,9 +55,18 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		if site.ID == "" {
 			site.ID = site.Domain
 		}
+		if err := s.ensureRedirectIDAvailable(site.ID, ""); err != nil {
+			errorResponse(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err := s.ensureSourceDomainAvailable(site.Domain, ""); err != nil {
+			errorResponse(w, http.StatusConflict, err.Error())
+			return
+		}
 		site.CreatedAt = time.Now()
 		site.UpdatedAt = time.Now()
 		site.Status = "provisioning"
+		site.DeployStatus = "pending"
 		if site.SSL {
 			site.CertIssueStatus = "pending"
 		}
@@ -104,6 +113,10 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(id, "/firewall") {
 		s.handleSiteFirewall(w, r, strings.TrimSuffix(id, "/firewall"))
+		return
+	}
+	if strings.HasSuffix(id, "/convert-to-redirect") {
+		s.handleSiteConvertToRedirect(w, r, strings.TrimSuffix(id, "/convert-to-redirect"))
 		return
 	}
 
@@ -174,6 +187,10 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 
 		needsFullProvision := false
 		if input.Domain != nil && *input.Domain != site.Domain {
+			if err := s.ensureSourceDomainAvailable(*input.Domain, site.ID); err != nil {
+				errorResponse(w, http.StatusConflict, err.Error())
+				return
+			}
 			site.Domain = *input.Domain
 			needsFullProvision = true
 		}
@@ -227,6 +244,8 @@ func (s *Server) handleSiteDetail(w http.ResponseWriter, r *http.Request) {
 			errorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		site.DeployStatus = "pending"
+		site.DeployError = ""
 		site.UpdatedAt = time.Now()
 
 		if err := s.Store.SaveSite(site); err != nil {
@@ -262,6 +281,9 @@ func (s *Server) refreshSiteConfig(site *models.Site) {
 }
 
 func (s *Server) refreshSiteConfigWithReload(site *models.Site, reload bool) {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
 	slog.Info("Refreshing site config", "site_id", site.ID, "domain", site.Domain)
 	runtimeSite := *site
 	preserveMessage := ""
@@ -276,62 +298,103 @@ func (s *Server) refreshSiteConfigWithReload(site *models.Site, reload bool) {
 		provisioningMessage = preserveMessage
 	}
 	s.updateStatus(site.ID, "provisioning", provisioningMessage)
+	s.updateSiteDeployState(site.ID, "pending", "")
 
 	config, err := s.Nginx.GenerateConfig(&runtimeSite)
 	if err != nil {
 		slog.Error("Config generation failed", "site_id", site.ID, "error", err)
+		s.updateSiteDeployFailure(site.ID, "config gen failed: "+err.Error())
 		s.updateStatus(site.ID, "error", "config gen failed: "+err.Error())
 		return
 	}
-	if err := s.Nginx.Validate(config); err != nil {
+	defer func() {
+		if removeErr := os.Remove(config); removeErr != nil && !os.IsNotExist(removeErr) {
+			slog.Warn("failed_to_remove_site_staging_config", "site_id", site.ID, "file", config, "error", removeErr)
+		}
+	}()
+	configBytes, err := os.ReadFile(config)
+	if err != nil {
+		s.updateSiteDeployFailure(site.ID, "config read failed: "+err.Error())
+		s.updateStatus(site.ID, "error", "config read failed: "+err.Error())
+		return
+	}
+	if err := s.validateHTTPConfigCandidate(site.ID, configBytes); err != nil {
 		slog.Error("Config validation failed", "site_id", site.ID, "error", err)
+		s.updateSiteDeployFailure(site.ID, "config invalid: "+err.Error())
+		if currentSite, getErr := s.Store.GetSite(site.ID); getErr == nil && siteHasLiveConfig(currentSite) {
+			s.updateStatus(site.ID, "active", preserveMessage)
+			return
+		}
 		s.updateStatus(site.ID, "error", "config invalid: "+err.Error())
 		return
 	}
 
 	var applyErr error
 	if reload {
-		applyErr = s.Nginx.Apply(site.ID, config)
+		applyErr = s.Nginx.ApplyRendered(site.ID, configBytes)
 	} else {
-		applyErr = s.Nginx.ApplyNoReload(site.ID, config)
+		applyErr = s.Nginx.ApplyRenderedNoReload(site.ID, configBytes)
 	}
 	if applyErr != nil {
 		slog.Error("Config application failed", "site_id", site.ID, "error", applyErr)
+		s.updateSiteDeployFailure(site.ID, "apply failed: "+applyErr.Error())
 		s.updateStatus(site.ID, "error", "apply failed: "+applyErr.Error())
 		return
 	}
+	s.updateSiteActiveConfig(site.ID, configBytes)
 
 	slog.Info("Site config refreshed successfully", "site_id", site.ID)
 	s.updateStatus(site.ID, "active", preserveMessage)
+	s.updateSiteDeployState(site.ID, "active", "")
 }
 
 func (s *Server) provisionSite(site *models.Site) {
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+
 	slog.Info("Provisioning site", "site_id", site.ID, "domain", site.Domain, "ssl_requested", site.SSL)
 	runtimeSite := *site
 	originalSSL := runtimeSite.SSL
 	if originalSSL {
 		runtimeSite.SSL = false
 	}
+	s.updateSiteDeployState(site.ID, "pending", "")
 
 	staging, err := s.Nginx.GenerateConfig(&runtimeSite)
 	if err != nil {
 		slog.Error("Initial config generation failed", "site_id", site.ID, "error", err)
+		s.updateSiteDeployFailure(site.ID, "config gen failed: "+err.Error())
 		s.updateStatus(site.ID, "error", "config gen failed: "+err.Error())
 		return
 	}
-	if err := s.Nginx.Validate(staging); err != nil {
+	defer func() {
+		if removeErr := os.Remove(staging); removeErr != nil && !os.IsNotExist(removeErr) {
+			slog.Warn("failed_to_remove_site_staging_config", "site_id", site.ID, "file", staging, "error", removeErr)
+		}
+	}()
+	stagingBytes, err := os.ReadFile(staging)
+	if err != nil {
+		s.updateSiteDeployFailure(site.ID, "config read failed: "+err.Error())
+		s.updateStatus(site.ID, "error", "config read failed: "+err.Error())
+		return
+	}
+	if err := s.validateHTTPConfigCandidate(site.ID, stagingBytes); err != nil {
 		slog.Error("Initial config validation failed", "site_id", site.ID, "error", err)
+		s.updateSiteDeployFailure(site.ID, "config invalid: "+err.Error())
 		s.updateStatus(site.ID, "error", "config invalid: "+err.Error())
 		return
 	}
-	if err := s.Nginx.Apply(site.ID, staging); err != nil {
+	if err := s.Nginx.ApplyRendered(site.ID, stagingBytes); err != nil {
 		slog.Error("Initial config application failed", "site_id", site.ID, "error", err)
+		s.updateSiteDeployFailure(site.ID, "apply failed: "+err.Error())
 		s.updateStatus(site.ID, "error", "apply failed: "+err.Error())
 		return
 	}
+	s.updateSiteActiveConfig(site.ID, stagingBytes)
 	if !originalSSL {
 		slog.Info("Site provisioned (HTTP only)", "site_id", site.ID)
 		s.updateStatus(site.ID, "active", "")
+		s.updateSiteDeployState(site.ID, "active", "")
 		return
 	}
 
@@ -364,6 +427,7 @@ func (s *Server) provisionSite(site *models.Site) {
 
 	if err := s.issueCertificate(site.Domain); err != nil {
 		slog.Error("Certificate issuance failed", "site_id", site.ID, "domain", site.Domain, "error", err)
+		s.updateSiteDeployFailure(site.ID, "certificate issue failed: "+err.Error())
 		s.markCertRetryNeeded(site.ID, err.Error())
 		return
 	}
@@ -371,9 +435,39 @@ func (s *Server) provisionSite(site *models.Site) {
 	s.clearCertRetryState(site.ID)
 	slog.Info("Site provisioned with SSL", "site_id", site.ID)
 	updatedSite, err := s.Store.GetSite(site.ID)
-	if err == nil {
-		s.refreshSiteConfig(updatedSite)
+	if err != nil {
+		return
 	}
+	sslConfigFile, err := s.Nginx.GenerateConfig(updatedSite)
+	if err != nil {
+		s.updateSiteDeployFailure(site.ID, "config gen failed: "+err.Error())
+		s.updateStatus(site.ID, "error", "config gen failed: "+err.Error())
+		return
+	}
+	defer func() {
+		if removeErr := os.Remove(sslConfigFile); removeErr != nil && !os.IsNotExist(removeErr) {
+			slog.Warn("failed_to_remove_site_staging_config", "site_id", site.ID, "file", sslConfigFile, "error", removeErr)
+		}
+	}()
+	sslConfigBytes, err := os.ReadFile(sslConfigFile)
+	if err != nil {
+		s.updateSiteDeployFailure(site.ID, "config read failed: "+err.Error())
+		s.updateStatus(site.ID, "error", "config read failed: "+err.Error())
+		return
+	}
+	if err := s.validateHTTPConfigCandidate(site.ID, sslConfigBytes); err != nil {
+		s.updateSiteDeployFailure(site.ID, "config invalid: "+err.Error())
+		s.updateStatus(site.ID, "active", "certificate issued but ssl config invalid: "+err.Error())
+		return
+	}
+	if err := s.Nginx.ApplyRendered(site.ID, sslConfigBytes); err != nil {
+		s.updateSiteDeployFailure(site.ID, "apply failed: "+err.Error())
+		s.updateStatus(site.ID, "error", "apply failed: "+err.Error())
+		return
+	}
+	s.updateSiteActiveConfig(site.ID, sslConfigBytes)
+	s.updateStatus(site.ID, "active", "")
+	s.updateSiteDeployState(site.ID, "active", "")
 }
 
 func (s *Server) updateStatus(id, status, msg string) {
@@ -398,6 +492,52 @@ func (s *Server) updateStatus(id, status, msg string) {
 		"previous_error_message", prevMsg,
 		"new_error_message", msg,
 	)
+}
+
+func (s *Server) updateSiteDeployState(id, deployStatus, deployError string) {
+	site, err := s.Store.GetSite(id)
+	if err != nil {
+		return
+	}
+	site.DeployStatus = deployStatus
+	site.DeployError = deployError
+	site.UpdatedAt = time.Now()
+	_ = s.Store.SaveSite(site)
+}
+
+func (s *Server) updateSiteDeployFailure(id, message string) {
+	site, err := s.Store.GetSite(id)
+	if err != nil {
+		return
+	}
+	site.DeployStatus = "invalid"
+	site.DeployError = message
+	site.UpdatedAt = time.Now()
+	if !siteHasLiveConfig(site) {
+		site.Status = "error"
+		site.ErrorMessage = message
+	}
+	_ = s.Store.SaveSite(site)
+}
+
+func (s *Server) updateSiteActiveConfig(id string, config []byte) {
+	site, err := s.Store.GetSite(id)
+	if err != nil {
+		return
+	}
+	site.ActiveConfig = string(config)
+	site.DeployStatus = "active"
+	site.DeployError = ""
+	site.UpdatedAt = time.Now()
+	_ = s.Store.SaveSite(site)
+}
+
+func (s *Server) validateHTTPConfigCandidate(id string, candidate []byte) error {
+	configs, err := s.activeHTTPConfigSet(id, candidate)
+	if err != nil {
+		return err
+	}
+	return s.Nginx.ValidateHTTPConfigSet(configs)
 }
 
 func (s *Server) handleSiteLogs(w http.ResponseWriter, r *http.Request, siteID string) {

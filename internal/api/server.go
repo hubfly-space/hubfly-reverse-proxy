@@ -74,14 +74,7 @@ func (s *Server) Bootstrap() {
 		_, _, _ = s.syncSitesFromContainers()
 		_, _, _ = s.syncStreamsFromContainers()
 	}
-
-	sites, err := s.Store.ListSites()
-	if err == nil {
-		for _, site := range sites {
-			siteCopy := site
-			s.refreshSiteConfig(&siteCopy)
-		}
-	}
+	s.restoreActiveHTTPConfigs()
 
 	streams, err := s.Store.ListStreams()
 	if err != nil {
@@ -109,6 +102,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/v1/management/container-ports", s.handleContainerPorts)
 	mux.HandleFunc("/v1/sites", s.handleSites)
 	mux.HandleFunc("/v1/sites/", s.handleSiteDetail)
+	mux.HandleFunc("/v1/redirects", s.handleRedirects)
+	mux.HandleFunc("/v1/redirects/", s.handleRedirectDetail)
 	mux.HandleFunc("/v1/streams", s.handleStreams)
 	mux.HandleFunc("/v1/streams/", s.handleStreamDetail)
 	mux.HandleFunc("/v1/control/reload", s.handleManualReload)

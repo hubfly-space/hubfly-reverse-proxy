@@ -26,6 +26,9 @@ type Site struct {
 	// Status fields
 	Status          string     `json:"status"` // "active", "provisioning", "error"
 	ErrorMessage    string     `json:"error_message,omitempty"`
+	DeployStatus    string     `json:"deploy_status,omitempty"` // "active", "pending", "invalid"
+	DeployError     string     `json:"deploy_error,omitempty"`
+	ActiveConfig    string     `json:"active_config,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 	CertIssueStatus string     `json:"cert_issue_status,omitempty"` // "pending", "retrying", "valid", "failed"

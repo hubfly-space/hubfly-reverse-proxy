@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -36,7 +37,8 @@ func (m *Manager) ValidateHTTPConfigSet(configs map[string][]byte) error {
 	}
 
 	for id, config := range configs {
-		if err := os.WriteFile(filepath.Join(testSitesDir, id+".conf"), config, 0644); err != nil {
+		rewrittenConfig := rewriteValidationPorts(string(config))
+		if err := os.WriteFile(filepath.Join(testSitesDir, id+".conf"), []byte(rewrittenConfig), 0644); err != nil {
 			return err
 		}
 	}
@@ -52,7 +54,8 @@ func (m *Manager) ValidateHTTPConfigSet(configs map[string][]byte) error {
 			if readErr != nil {
 				return readErr
 			}
-			if writeErr := os.WriteFile(filepath.Join(testStreamsDir, entry.Name()), data, 0644); writeErr != nil {
+			rewrittenStream := rewriteValidationPorts(string(data))
+			if writeErr := os.WriteFile(filepath.Join(testStreamsDir, entry.Name()), []byte(rewrittenStream), 0644); writeErr != nil {
 				return writeErr
 			}
 		}
@@ -83,5 +86,40 @@ func (m *Manager) ValidateHTTPConfigSet(configs map[string][]byte) error {
 	if err := testManager.ensureMainConfigPaths(); err != nil {
 		return err
 	}
+	testConfigBytes, err := os.ReadFile(testNginxConf)
+	if err != nil {
+		return err
+	}
+	testConfig := rewriteValidationPorts(string(testConfigBytes))
+	testConfig = injectValidationErrorLog(testConfig)
+	if err := os.WriteFile(testNginxConf, []byte(testConfig), 0644); err != nil {
+		return err
+	}
 	return testManager.runConfigTest()
+}
+
+func rewriteValidationPorts(config string) string {
+	replacements := []struct {
+		pattern *regexp.Regexp
+		value   string
+	}{
+		{regexp.MustCompile(`(?m)(listen\s+)\[::\]:443(\s+ssl\b)`), `${1}[::]:18443$2`},
+		{regexp.MustCompile(`(?m)(listen\s+)443(\s+ssl\b)`), `${1}18443$2`},
+		{regexp.MustCompile(`(?m)(listen\s+)\[::\]:80(\b)`), `${1}[::]:18080$2`},
+		{regexp.MustCompile(`(?m)(listen\s+)80(\b)`), `${1}18080$2`},
+		{regexp.MustCompile(`(?m)(listen\s+)10004(\b)`), `${1}11004$2`},
+	}
+	out := config
+	for _, replacement := range replacements {
+		out = replacement.pattern.ReplaceAllString(out, replacement.value)
+	}
+	return out
+}
+
+func injectValidationErrorLog(config string) string {
+	errorLogPattern := regexp.MustCompile(`(?m)^\s*error_log\s+[^;]+;\s*$`)
+	if errorLogPattern.MatchString(config) {
+		return errorLogPattern.ReplaceAllString(config, "error_log stderr notice;")
+	}
+	return "error_log stderr notice;\n" + config
 }

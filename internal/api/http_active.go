@@ -20,7 +20,12 @@ func (s *Server) activeHTTPConfigSet(candidateID string, candidate []byte) (map[
 		if strings.TrimSpace(site.ActiveConfig) == "" {
 			continue
 		}
-		configs[site.ID] = []byte(site.ActiveConfig)
+		normalized := s.Nginx.NormalizeRenderedHTTPConfig(site.ActiveConfig)
+		if normalized != site.ActiveConfig {
+			site.ActiveConfig = normalized
+			_ = s.Store.SaveSite(&site)
+		}
+		configs[site.ID] = []byte(normalized)
 	}
 
 	redirects, err := s.Store.ListRedirects()
@@ -31,7 +36,12 @@ func (s *Server) activeHTTPConfigSet(candidateID string, candidate []byte) (map[
 		if strings.TrimSpace(redirect.ActiveConfig) == "" {
 			continue
 		}
-		configs[redirect.ID] = []byte(redirect.ActiveConfig)
+		normalized := s.Nginx.NormalizeRenderedHTTPConfig(redirect.ActiveConfig)
+		if normalized != redirect.ActiveConfig {
+			redirect.ActiveConfig = normalized
+			_ = s.Store.SaveRedirect(&redirect)
+		}
+		configs[redirect.ID] = []byte(normalized)
 	}
 
 	if candidate != nil {
@@ -53,6 +63,7 @@ func (s *Server) seedActiveHTTPConfigsFromDisk() {
 				continue
 			}
 			site.ActiveConfig = string(data)
+			site.ActiveConfig = s.Nginx.NormalizeRenderedHTTPConfig(site.ActiveConfig)
 			site.Status = "active"
 			site.DeployStatus = "active"
 			site.DeployError = ""
@@ -72,6 +83,7 @@ func (s *Server) seedActiveHTTPConfigsFromDisk() {
 				continue
 			}
 			redirect.ActiveConfig = string(data)
+			redirect.ActiveConfig = s.Nginx.NormalizeRenderedHTTPConfig(redirect.ActiveConfig)
 			redirect.Status = "active"
 			redirect.DeployStatus = "active"
 			redirect.DeployError = ""
@@ -100,7 +112,12 @@ func (s *Server) restoreActiveHTTPConfigs() {
 			if strings.TrimSpace(site.ActiveConfig) == "" {
 				continue
 			}
-			configs[site.ID] = []byte(site.ActiveConfig)
+			normalized := s.Nginx.NormalizeRenderedHTTPConfig(site.ActiveConfig)
+			if normalized != site.ActiveConfig {
+				site.ActiveConfig = normalized
+				_ = s.Store.SaveSite(&site)
+			}
+			configs[site.ID] = []byte(normalized)
 		}
 	}
 	redirects, err := s.Store.ListRedirects()
@@ -110,7 +127,12 @@ func (s *Server) restoreActiveHTTPConfigs() {
 			if strings.TrimSpace(redirect.ActiveConfig) == "" {
 				continue
 			}
-			configs[redirect.ID] = []byte(redirect.ActiveConfig)
+			normalized := s.Nginx.NormalizeRenderedHTTPConfig(redirect.ActiveConfig)
+			if normalized != redirect.ActiveConfig {
+				redirect.ActiveConfig = normalized
+				_ = s.Store.SaveRedirect(&redirect)
+			}
+			configs[redirect.ID] = []byte(normalized)
 		}
 	}
 	for id, config := range configs {

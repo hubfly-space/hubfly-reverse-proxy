@@ -525,7 +525,7 @@ func (s *Server) updateSiteActiveConfig(id string, config []byte) {
 	if err != nil {
 		return
 	}
-	site.ActiveConfig = string(config)
+	site.ActiveConfig = s.Nginx.NormalizeRenderedHTTPConfig(string(config))
 	site.DeployStatus = "active"
 	site.DeployError = ""
 	site.UpdatedAt = time.Now()

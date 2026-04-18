@@ -299,7 +299,7 @@ func (s *Server) updateRedirectActiveConfig(id string, config []byte) {
 	if err != nil {
 		return
 	}
-	redirect.ActiveConfig = string(config)
+	redirect.ActiveConfig = s.Nginx.NormalizeRenderedHTTPConfig(string(config))
 	redirect.DeployStatus = "active"
 	redirect.DeployError = ""
 	redirect.UpdatedAt = time.Now()

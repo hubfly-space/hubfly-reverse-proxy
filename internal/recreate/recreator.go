@@ -44,7 +44,8 @@ func Run(st store.Store, nm *nginx.Manager) (Result, error) {
 	for i := range sites {
 		site := sites[i]
 		if strings.TrimSpace(site.ActiveConfig) != "" {
-			if err := nm.ApplyRenderedNoReload(site.ID, []byte(site.ActiveConfig)); err != nil {
+			normalized := nm.NormalizeRenderedHTTPConfig(site.ActiveConfig)
+			if err := nm.ApplyRenderedNoReload(site.ID, []byte(normalized)); err != nil {
 				return Result{}, fmt.Errorf("apply active site config for %s: %w", site.ID, err)
 			}
 			continue
@@ -71,7 +72,8 @@ func Run(st store.Store, nm *nginx.Manager) (Result, error) {
 	for i := range redirects {
 		redirect := redirects[i]
 		if strings.TrimSpace(redirect.ActiveConfig) != "" {
-			if err := nm.ApplyRenderedNoReload(redirect.ID, []byte(redirect.ActiveConfig)); err != nil {
+			normalized := nm.NormalizeRenderedHTTPConfig(redirect.ActiveConfig)
+			if err := nm.ApplyRenderedNoReload(redirect.ID, []byte(normalized)); err != nil {
 				return Result{}, fmt.Errorf("apply active redirect config for %s: %w", redirect.ID, err)
 			}
 			continue

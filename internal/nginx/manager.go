@@ -426,6 +426,7 @@ func (m *Manager) ensureMainConfigPaths() error {
 	updated = strings.ReplaceAll(updated, "/var/www/hubfly/static", filepath.ToSlash(m.StaticDir))
 	updated = strings.ReplaceAll(updated, "/var/log/hubfly/access.log", filepath.ToSlash(filepath.Join(m.LogsDir, "access.log")))
 	updated = strings.ReplaceAll(updated, "/var/cache/nginx", filepath.ToSlash(m.CacheDir))
+	updated = normalizeMainConfigRuntimePaths(updated, m)
 	updated = ensureServerNameHashConfig(updated)
 	updated = strings.ReplaceAll(updated, "ssl_reject_handshake on;", fmt.Sprintf("ssl_certificate %s;\n        ssl_certificate_key %s;\n        return 444;", filepath.ToSlash(m.FallbackCert), filepath.ToSlash(m.FallbackKey)))
 	updated = strings.ReplaceAll(updated, "listen 82;", "listen 10004;")
@@ -463,6 +464,25 @@ func (m *Manager) ensureMainConfigPaths() error {
 		return nil
 	}
 	return os.WriteFile(m.NginxConf, []byte(updated), 0644)
+}
+
+func normalizeMainConfigRuntimePaths(config string, m *Manager) string {
+	sitesIncludePattern := regexp.MustCompile(`(?m)^\s*include\s+.+/sites/\*\.conf;\s*$`)
+	streamsIncludePattern := regexp.MustCompile(`(?m)^\s*include\s+.+/streams/\*\.conf;\s*$`)
+	staticRootPattern := regexp.MustCompile(`(?m)^(\s*root\s+).+/static(\s*;)\s*$`)
+	accessLogPattern := regexp.MustCompile(`(?m)^\s*access_log\s+.+/access\.log\s+hubfly;\s*$`)
+	cachePathPattern := regexp.MustCompile(`(?m)^\s*proxy_cache_path\s+.+\s+levels=1:2\s+keys_zone=hubfly_cache:10m\s+max_size=10g\s+inactive=60m\s+use_temp_path=off;\s*$`)
+	fallbackCertPattern := regexp.MustCompile(`(?m)^\s*ssl_certificate\s+.+/default-certs/fallback\.crt;\s*$`)
+	fallbackKeyPattern := regexp.MustCompile(`(?m)^\s*ssl_certificate_key\s+.+/default-certs/fallback\.key;\s*$`)
+
+	config = sitesIncludePattern.ReplaceAllString(config, fmt.Sprintf("    include %s;", filepath.ToSlash(filepath.Join(m.SitesDir, "*.conf"))))
+	config = streamsIncludePattern.ReplaceAllString(config, fmt.Sprintf("    include %s;", filepath.ToSlash(filepath.Join(m.StreamsDir, "*.conf"))))
+	config = staticRootPattern.ReplaceAllString(config, fmt.Sprintf("${1}%s${2}", filepath.ToSlash(m.StaticDir)))
+	config = accessLogPattern.ReplaceAllString(config, fmt.Sprintf("    access_log  %s  hubfly;", filepath.ToSlash(filepath.Join(m.LogsDir, "access.log"))))
+	config = cachePathPattern.ReplaceAllString(config, fmt.Sprintf("    proxy_cache_path %s levels=1:2 keys_zone=hubfly_cache:10m max_size=10g inactive=60m use_temp_path=off;", filepath.ToSlash(m.CacheDir)))
+	config = fallbackCertPattern.ReplaceAllString(config, fmt.Sprintf("        ssl_certificate %s;", filepath.ToSlash(m.FallbackCert)))
+	config = fallbackKeyPattern.ReplaceAllString(config, fmt.Sprintf("        ssl_certificate_key %s;", filepath.ToSlash(m.FallbackKey)))
+	return config
 }
 
 func ensureServerNameHashConfig(config string) string {

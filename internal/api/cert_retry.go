@@ -94,6 +94,8 @@ func (s *Server) markCertRetryNeeded(siteID, reason string) {
 		site.CertIssueStatus = "failed"
 		site.NextCertRetryAt = nil
 		site.Status = "active"
+		site.DeployStatus = "invalid"
+		site.DeployError = "certificate issuance failed permanently: " + reason
 		site.ErrorMessage = "certificate issuance failed permanently; fallback certificate in use: " + reason
 		if err := s.Store.SaveSite(site); err != nil {
 			slog.Error("Failed to persist terminal certificate failure state", "site_id", siteID, "error", err)
@@ -108,6 +110,8 @@ func (s *Server) markCertRetryNeeded(siteID, reason string) {
 	site.CertIssueStatus = "retrying"
 	site.NextCertRetryAt = &nextAttempt
 	site.Status = "active"
+	site.DeployStatus = "pending"
+	site.DeployError = fmt.Sprintf("certificate retry %d/%d pending: %s", site.CertRetryCount, maxRetries, reason)
 	site.ErrorMessage = fmt.Sprintf(
 		"certificate issuance failed, retry %d/%d at %s: %s",
 		site.CertRetryCount,

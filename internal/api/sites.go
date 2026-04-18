@@ -427,7 +427,7 @@ func (s *Server) provisionSite(site *models.Site) {
 
 	if err := s.issueCertificate(site.Domain); err != nil {
 		slog.Error("Certificate issuance failed", "site_id", site.ID, "domain", site.Domain, "error", err)
-		s.updateSiteDeployFailure(site.ID, "certificate issue failed: "+err.Error())
+		s.updateSiteDeployState(site.ID, "pending", "certificate issue failed: "+err.Error())
 		s.markCertRetryNeeded(site.ID, err.Error())
 		return
 	}

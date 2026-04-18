@@ -177,6 +177,9 @@ func (m *Manager) Validate(stagingFile string) error {
 }
 
 func (m *Manager) runConfigTest() error {
+	if err := m.ensureFallbackCertificate(); err != nil {
+		return fmt.Errorf("ensure fallback certificate: %w", err)
+	}
 	path, err := m.resolveBinary()
 	if err != nil {
 		slog.Warn("Nginx not found, skipping config test")

@@ -9,6 +9,9 @@ import (
 )
 
 func (m *Manager) ValidateHTTPConfigSet(configs map[string][]byte) error {
+	if err := m.ensureFallbackCertificate(); err != nil {
+		return fmt.Errorf("ensure fallback certificate: %w", err)
+	}
 	tempRoot, err := os.MkdirTemp("", "hubfly-nginx-validate")
 	if err != nil {
 		return err

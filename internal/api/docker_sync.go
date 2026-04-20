@@ -115,7 +115,7 @@ func (s *Server) syncUpstreamsAndRefreshLocked(forceReload bool) (bool, int, int
 			continue
 		}
 		siteCopy := *site
-		s.refreshSiteConfigWithReload(&siteCopy, false)
+		s.refreshSiteConfigLocked(&siteCopy, false)
 	}
 	for _, port := range ports {
 		s.reconcileStreamsWithReload(port, false)

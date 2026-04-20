@@ -283,7 +283,11 @@ func (s *Server) refreshSiteConfig(site *models.Site) {
 func (s *Server) refreshSiteConfigWithReload(site *models.Site, reload bool) {
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
+	s.refreshSiteConfigLocked(site, reload)
+}
 
+// refreshSiteConfigLocked assumes syncMu is already held by the caller.
+func (s *Server) refreshSiteConfigLocked(site *models.Site, reload bool) {
 	slog.Info("Refreshing site config", "site_id", site.ID, "domain", site.Domain)
 	runtimeSite := *site
 	preserveMessage := ""

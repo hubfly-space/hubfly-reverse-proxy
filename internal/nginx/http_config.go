@@ -14,7 +14,7 @@ import (
 
 const (
 	defaultUpstreamMaxFails         = 3
-	defaultUpstreamFailTimeout      = "10s"
+	defaultUpstreamFailTimeout      = "20s"
 	defaultProxyNextUpstream        = "error timeout invalid_header http_502 http_503 http_504"
 	defaultProxyNextUpstreamTries   = 2
 	defaultProxyConnectTimeout      = "3s"

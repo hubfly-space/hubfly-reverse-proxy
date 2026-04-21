@@ -452,8 +452,8 @@ func TestLoadBalancedConfigKeepsProxyHeadersAndUpgradeSupport(t *testing.T) {
 	expected := []string{
 		"upstream hubfly_upstream_test_lb_headers {",
 		"least_conn;",
-		"server 127.0.0.1:8080 weight=1 max_fails=3 fail_timeout=10s;",
-		"server 127.0.0.1:8081 weight=2 max_fails=3 fail_timeout=10s;",
+		"server 127.0.0.1:8080 weight=1 max_fails=3 fail_timeout=20s;",
+		"server 127.0.0.1:8081 weight=2 max_fails=3 fail_timeout=20s;",
 		"set $upstream_endpoint \"http://hubfly_upstream_test_lb_headers\";",
 		"proxy_next_upstream error timeout invalid_header http_502 http_503 http_504;",
 		"proxy_next_upstream_tries 2;",

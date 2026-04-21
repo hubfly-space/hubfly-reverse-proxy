@@ -17,9 +17,9 @@ const (
 	defaultUpstreamFailTimeout      = "20s"
 	defaultProxyNextUpstream        = "error timeout invalid_header http_502 http_503 http_504"
 	defaultProxyNextUpstreamTries   = 2
-	defaultProxyConnectTimeout      = "3s"
-	defaultProxySendTimeout         = "60s"
-	defaultProxyReadTimeout         = "60s"
+	defaultProxyConnectTimeout      = "10s"
+	defaultProxySendTimeout         = "300s"
+	defaultProxyReadTimeout         = "300s"
 )
 
 func (m *Manager) GenerateConfig(site *models.Site) (string, error) {

@@ -16,10 +16,6 @@ import (
 var certRetrySchedule = []time.Duration{
 	1 * time.Minute,
 	5 * time.Minute,
-	15 * time.Minute,
-	1 * time.Hour,
-	6 * time.Hour,
-	24 * time.Hour,
 }
 
 const certRetrySweepInterval = 30 * time.Second

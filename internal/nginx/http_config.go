@@ -12,6 +12,16 @@ import (
 	"github.com/hubfly/hubfly-reverse-proxy/internal/models"
 )
 
+const (
+	defaultUpstreamMaxFails         = 3
+	defaultUpstreamFailTimeout      = "10s"
+	defaultProxyNextUpstream        = "error timeout invalid_header http_502 http_503 http_504"
+	defaultProxyNextUpstreamTries   = 2
+	defaultProxyConnectTimeout      = "3s"
+	defaultProxySendTimeout         = "60s"
+	defaultProxyReadTimeout         = "60s"
+)
+
 func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 	var templateContent strings.Builder
 	for _, tplName := range site.Templates {
@@ -63,6 +73,7 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 	if useLoadBalancing && hasAvailableUpstream {
 		proxyPassTarget = fmt.Sprintf("http://%s", upstreamName)
 	}
+	usePassiveFailover := useLoadBalancing && len(upstreamTargets) > 1
 
 	data := struct {
 		*models.Site
@@ -78,8 +89,16 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 		UpstreamTargets      []upstreamTarget
 		LoadBalanceAlgo      string
 		UseLoadBalancing     bool
+		UsePassiveFailover   bool
 		HasAvailableUpstream bool
 		ProxyPassTarget      string
+		UpstreamMaxFails     int
+		UpstreamFailTimeout  string
+		ProxyNextUpstream    string
+		ProxyNextUpstreamTry int
+		ProxyConnectTimeout  string
+		ProxySendTimeout     string
+		ProxyReadTimeout     string
 	}{
 		Site:                 site,
 		TemplateSnippets:     templateContent.String(),
@@ -94,8 +113,16 @@ func (m *Manager) GenerateConfig(site *models.Site) (string, error) {
 		UpstreamTargets:      upstreamTargets,
 		LoadBalanceAlgo:      lbAlgorithm,
 		UseLoadBalancing:     useLoadBalancing && hasAvailableUpstream,
+		UsePassiveFailover:   usePassiveFailover,
 		HasAvailableUpstream: hasAvailableUpstream,
 		ProxyPassTarget:      proxyPassTarget,
+		UpstreamMaxFails:     defaultUpstreamMaxFails,
+		UpstreamFailTimeout:  defaultUpstreamFailTimeout,
+		ProxyNextUpstream:    defaultProxyNextUpstream,
+		ProxyNextUpstreamTry: defaultProxyNextUpstreamTries,
+		ProxyConnectTimeout:  defaultProxyConnectTimeout,
+		ProxySendTimeout:     defaultProxySendTimeout,
+		ProxyReadTimeout:     defaultProxyReadTimeout,
 	}
 
 	t, err := template.New("site").Funcs(template.FuncMap{"join": strings.Join}).Parse(serverTemplate)
@@ -122,6 +149,13 @@ const serverTemplate = `
         proxy_pass $upstream_endpoint;
         {{ else }}
         return 502;
+        {{ end }}
+        {{ if .UsePassiveFailover }}
+        proxy_next_upstream {{ .ProxyNextUpstream }};
+        proxy_next_upstream_tries {{ .ProxyNextUpstreamTry }};
+        proxy_connect_timeout {{ .ProxyConnectTimeout }};
+        proxy_send_timeout {{ .ProxySendTimeout }};
+        proxy_read_timeout {{ .ProxyReadTimeout }};
         {{ end }}
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -154,7 +188,7 @@ upstream {{ .UpstreamName }} {
     ip_hash;
     {{ end }}
     {{ range .UpstreamTargets }}
-    server {{ .Address }} weight={{ .Weight }};
+    server {{ .Address }} weight={{ .Weight }} max_fails={{ $.UpstreamMaxFails }} fail_timeout={{ $.UpstreamFailTimeout }};
     {{ end }}
     keepalive 32;
 }

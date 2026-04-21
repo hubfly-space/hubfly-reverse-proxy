@@ -452,9 +452,14 @@ func TestLoadBalancedConfigKeepsProxyHeadersAndUpgradeSupport(t *testing.T) {
 	expected := []string{
 		"upstream hubfly_upstream_test_lb_headers {",
 		"least_conn;",
-		"server 127.0.0.1:8080 weight=1;",
-		"server 127.0.0.1:8081 weight=2;",
+		"server 127.0.0.1:8080 weight=1 max_fails=3 fail_timeout=10s;",
+		"server 127.0.0.1:8081 weight=2 max_fails=3 fail_timeout=10s;",
 		"set $upstream_endpoint \"http://hubfly_upstream_test_lb_headers\";",
+		"proxy_next_upstream error timeout invalid_header http_502 http_503 http_504;",
+		"proxy_next_upstream_tries 2;",
+		"proxy_connect_timeout 3s;",
+		"proxy_send_timeout 60s;",
+		"proxy_read_timeout 60s;",
 		"proxy_set_header Upgrade $http_upgrade;",
 		"proxy_set_header Connection $connection_upgrade;",
 		"proxy_set_header Host $host;",
@@ -464,6 +469,50 @@ func TestLoadBalancedConfigKeepsProxyHeadersAndUpgradeSupport(t *testing.T) {
 	for _, e := range expected {
 		if !strings.Contains(configStr, e) {
 			t.Fatalf("expected load-balanced config to contain %q", e)
+		}
+	}
+}
+
+func TestSingleUpstreamLoadBalancingDoesNotRenderPassiveFailoverRetries(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "nginx_test_lb_single")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	mgr := NewManager(tmpDir)
+	if err := mgr.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	site := &models.Site{
+		ID:        "test-lb-single",
+		Domain:    "single.local",
+		Upstreams: []string{"127.0.0.1:8080"},
+		LoadBalancing: &models.LoadBalancing{
+			Enabled: true,
+		},
+	}
+
+	configFile, err := mgr.GenerateConfig(site)
+	if err != nil {
+		t.Fatalf("GenerateConfig failed: %v", err)
+	}
+
+	content, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configStr := string(content)
+
+	unexpected := []string{
+		"proxy_next_upstream ",
+		"proxy_next_upstream_tries ",
+		"proxy_connect_timeout ",
+	}
+	for _, value := range unexpected {
+		if strings.Contains(configStr, value) {
+			t.Fatalf("expected single-upstream config to omit %q", value)
 		}
 	}
 }
